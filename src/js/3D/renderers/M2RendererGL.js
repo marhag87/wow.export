@@ -1842,6 +1842,26 @@ class M2RendererGL {
 	}
 
 	/**
+	 * Get the raw attachment record for an attachment point.
+	 * Position is in WoW coords (X=right, Y=forward, Z=up).
+	 * @param {number} attachmentId - attachment ID (e.g., 11 for helmet)
+	 * @returns {{ bone: number, position: number[] }|null}
+	 */
+	getAttachmentInfo(attachmentId) {
+		if (!this.m2)
+			return null;
+
+		let attachment = this.m2.getAttachmentById(attachmentId);
+		if (!attachment && this.skelLoader?.getAttachmentById)
+			attachment = this.skelLoader.getAttachmentById(attachmentId);
+
+		if (!attachment || attachment.bone < 0)
+			return null;
+
+		return { bone: attachment.bone, position: attachment.position };
+	}
+
+	/**
 	 * Get world transform matrix for an attachment point.
 	 * Combines bone transform with attachment local offset.
 	 * @param {number} attachmentId - attachment ID (e.g., 11 for helmet)

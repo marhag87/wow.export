@@ -302,6 +302,7 @@ class GLTFWriter {
 		let idx_bone_joints = -1
 		let idx_bone_weights = -1;
 		const animationBufferMap = new Map();
+		const joint_node_index_map = new Map();
 
 		if (bones.length > 0) {
 			idx_bone_joints = add_buffered_accessor({
@@ -462,6 +463,7 @@ class GLTFWriter {
 				{ name: bone_name, translation: bone.pivot.map((v, i) => v - parent_pos[i])};
 				
 				bone_lookup_map.set(bi, node);
+				joint_node_index_map.set(bi, core.view.config.modelsExportWithBonePrefix ? nodeIndex + 1 : nodeIndex);
 
 				if (core.view.config.modelsExportWithBonePrefix){
 					nodes.push(prefix_node);
@@ -1399,13 +1401,27 @@ class GLTFWriter {
 
 				const node = { name: `${equip.name}_${mesh.name}`, mesh: meshIndex };
 
-				// apply skin or parent to attachment bone
-				if (eq_has_skin)
-					node.skin = 0;
-				else if (equip.attachment_bone !== undefined && equip.attachment_bone >= 0)
-					node.parent_bone = equip.attachment_bone;
+				const joint_index = equip.attachment_bone !== undefined && equip.attachment_bone >= 0 ?
+					joint_node_index_map.get(equip.attachment_bone) : undefined;
 
-				add_scene_node(node);
+				// apply skin, or parent rigidly to the attachment bone node
+				if (eq_has_skin) {
+					node.skin = 0;
+					add_scene_node(node);
+				} else if (joint_index !== undefined) {
+					const pivot = bones[equip.attachment_bone].pivot;
+					const offset = equip.attachment_offset ?? [0, 0, 0];
+					node.translation = offset.map((v, i) => v - pivot[i]);
+
+					const node_index = root.nodes.length;
+					root.nodes.push(node);
+
+					const joint = root.nodes[joint_index];
+					joint.children ? joint.children.push(node_index) : joint.children = [node_index];
+				} else {
+					add_scene_node(node);
+				}
+
 				bins.push(buffer);
 			}
 		}

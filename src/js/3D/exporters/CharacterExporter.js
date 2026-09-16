@@ -214,11 +214,18 @@ class CharacterExporter {
 				);
 
 				if (geometry) {
+					const info = !is_collection_style && attachment_id !== undefined
+						? this.char_renderer?.getAttachmentInfo?.(attachment_id)
+						: null;
+
 					results.push({
 						slot_id,
 						item_id: entry.item_id,
 						modifier_id: entry.modifier_id,
 						attachment_id,
+						attachment_bone: info?.bone,
+						// WoW (X=right, Y=forward, Z=up) -> GL (X, Z, -Y), matching M2Loader
+						attachment_offset: info ? [info.position[0], info.position[2], -info.position[1]] : null,
 						is_collection_style,
 						renderer,
 						...geometry
