@@ -391,7 +391,8 @@ class M2Exporter {
 					matName = textureMap.get(dataTextureKey).matName;
 			}
 
-			gltf.addMesh(GeosetMapper.getGeosetName(mI, mesh.submeshID), indices, matName);
+			const matProps = texUnit ? this.m2.materials[texUnit.materialIndex] : undefined;
+			gltf.addMesh(GeosetMapper.getGeosetName(mI, mesh.submeshID), indices, matName, matProps);
 		}
 
 		// add equipment models for GLTF export
@@ -522,7 +523,8 @@ class M2Exporter {
 			meshes.push({
 				name: `${mesh_idx++}`,
 				triangles,
-				matName
+				matName,
+				matProps: texUnit ? m2.materials[texUnit.materialIndex] : undefined
 			});
 		}
 

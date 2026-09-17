@@ -25,6 +25,26 @@ const GLTF_FLOAT = 0x1406;
 
 const GLTF_TRIANGLES = 0x0004;
 
+// matches the alpha test threshold used by the M2 renderer (128/255)
+const M2_ALPHA_KEY_CUTOFF = 0.501960814;
+
+const M2_MATERIAL_FLAG_TWO_SIDED = 0x4;
+
+/**
+ * Map M2 material properties onto glTF alpha mode and sidedness.
+ * glTF has no additive or modulate modes, so every M2 blend mode past
+ * alpha key is approximated as BLEND.
+ * @param {object} [props] - { blendingMode, flags } from M2 materials
+ * @returns {{ alphaMode: string, doubleSided: boolean }}
+ */
+function get_gltf_material_mode(props) {
+	const blend = props?.blendingMode ?? 0;
+	return {
+		alphaMode: blend === 0 ? 'OPAQUE' : blend === 1 ? 'MASK' : 'BLEND',
+		doubleSided: ((props?.flags ?? 0) & M2_MATERIAL_FLAG_TWO_SIDED) !== 0
+	};
+}
+
 /**
  * Calculate the minimum/maximum values of an array buffer.
  * @param {Array} values 
@@ -168,9 +188,10 @@ class GLTFWriter {
 	 * @param {string} name
 	 * @param {Array} triangles
 	 * @param {string} matName
+	 * @param {object} [matProps] - { blendingMode, flags } from M2 materials
 	 */
-	addMesh(name, triangles, matName) {
-		this.meshes.push({ name, triangles, matName });
+	addMesh(name, triangles, matName, matProps) {
+		this.meshes.push({ name, triangles, matName, matProps });
 	}
 
 	/**
@@ -184,7 +205,7 @@ class GLTFWriter {
 	 * @param {Float32Array} equip.uv2 - Secondary UV coordinates (optional)
 	 * @param {Uint8Array} equip.boneIndices - Bone indices (remapped to char skeleton)
 	 * @param {Uint8Array} equip.boneWeights - Bone weights
-	 * @param {Array} equip.meshes - Array of {name, triangles, matName}
+	 * @param {Array} equip.meshes - Array of {name, triangles, matName, matProps}
 	 * @param {number} [equip.attachment_bone] - Bone index for attachment (non-skinned equipment)
 	 */
 	addEquipmentModel(equip) {
@@ -908,13 +929,12 @@ class GLTFWriter {
 			root.materials = [];
 		}
 
-		const materialMap = new Map();
+		const texture_index_map = new Map();
 		const texture_buffer_views = [];
 
 		for (const [fileDataID, texFile] of this.textures) {
 			const imageIndex = root.images.length;
 			const textureIndex = root.textures.length;
-			const materialIndex = root.materials.length;
 
 			if (format === 'glb' && this.texture_buffers.has(fileDataID)) {
 				// glb mode with embedded textures: use bufferView reference
@@ -933,19 +953,61 @@ class GLTFWriter {
 			}
 
 			root.textures.push({ source: imageIndex });
-			root.materials.push({
-				name: path.basename(texFile.matName, path.extname(texFile.matName)),
+			texture_index_map.set(texFile.matName, textureIndex);
+		}
+
+		// materials are created on first use, one per (texture, alpha mode, sidedness),
+		// since a texture shared by an opaque and an alpha-keyed M2 material needs both
+		const material_index_map = new Map();
+		const material_names = new Set();
+		const first_mat_name = this.textures.size > 0 ? this.textures.values().next().value.matName : undefined;
+
+		const get_material = (mat_name, mat_props) => {
+			if (!texture_index_map.has(mat_name))
+				mat_name = first_mat_name;
+
+			// no textures: keep the old fallback of material 0
+			if (mat_name === undefined)
+				return 0;
+
+			const { alphaMode, doubleSided } = get_gltf_material_mode(mat_props);
+			const key = mat_name + '|' + alphaMode + '|' + doubleSided;
+
+			let material_index = material_index_map.get(key);
+			if (material_index !== undefined)
+				return material_index;
+
+			let name = path.basename(mat_name, path.extname(mat_name));
+			if (material_names.has(name))
+				name += '_' + alphaMode.toLowerCase() + (doubleSided ? '_2s' : '');
+			material_names.add(name);
+
+			const material = {
+				name,
 				emissiveFactor: [0, 0, 0],
 				pbrMetallicRoughness: {
 					baseColorTexture: {
-						index: textureIndex
+						index: texture_index_map.get(mat_name)
 					},
 					metallicFactor: 0
 				}
-			});
+			};
 
-			materialMap.set(texFile.matName, materialIndex);
-		}
+			if (alphaMode !== 'OPAQUE')
+				material.alphaMode = alphaMode;
+
+			if (alphaMode === 'MASK')
+				material.alphaCutoff = M2_ALPHA_KEY_CUTOFF;
+
+			if (doubleSided)
+				material.doubleSided = true;
+
+			material_index = root.materials.length;
+			root.materials.push(material);
+			material_index_map.set(key, material_index);
+
+			return material_index;
+		};
 
 		const mesh_component_meta = Array(this.meshes.length);
 		for (let i = 0, n = this.meshes.length; i < n; i++) {
@@ -1109,7 +1171,7 @@ class GLTFWriter {
 						attributes: primitive_attributes,
 						indices: accessorIndex,
 						mode: GLTF_TRIANGLES,
-						material: materialMap.get(mesh.matName) ?? 0
+						material: get_material(mesh.matName, mesh.matProps)
 					}
 				]
 			});
@@ -1395,7 +1457,7 @@ class GLTFWriter {
 						attributes: eq_prim_attribs,
 						indices: accessorIndex,
 						mode: GLTF_TRIANGLES,
-						material: materialMap.get(mesh.matName) ?? 0
+						material: get_material(mesh.matName, mesh.matProps)
 					}]
 				});
 
