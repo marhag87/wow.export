@@ -84,6 +84,25 @@ function vec3_to_mat4x4(v) {
 	];
 }
 
+/**
+ * Get the scale keyframes a bone uses for an animation. Animations without their
+ * own scale data inherit the scale of animation 0 at time 0, matching the M2
+ * renderer (attachment bones such as shoulders only carry scale in Stand).
+ * @param {object} bone
+ * @param {number} anim_index
+ * @returns {{ timestamps: Array, values: Array }|null}
+ */
+function get_bone_scale_track(bone, anim_index) {
+	const timestamps = bone.scale.timestamps[anim_index];
+	if (timestamps?.length > 0)
+		return { timestamps, values: bone.scale.values[anim_index] };
+
+	if (anim_index !== 0 && bone.scale.timestamps[0]?.length > 0)
+		return { timestamps: [0], values: [bone.scale.values[0][0]] };
+
+	return null;
+}
+
 class GLTFWriter {
 	/**
 	 * Construct a new GLTF writer instance.
@@ -391,24 +410,16 @@ class GLTFWriter {
 							}
 						}
 
-						for (let i = 0; i < bone.scale.timestamps.length; i++) {
-							if (i == animationIndex && bone.scale.interpolation < 2) {
-								requiredBufferSize += bone.scale.timestamps[i].length * 4;
-								break;
-							}
+						if (bone.scale.interpolation < 2) {
+							const scale_track = get_bone_scale_track(bone, animationIndex);
+							if (scale_track)
+								requiredBufferSize += scale_track.timestamps.length * (4 + 3 * 4);
 						}
 
 						// Vector3 values
 						for (let i = 0; i < bone.translation.values.length; i++) {
 							if (i == animationIndex && bone.translation.interpolation < 2) {
 								requiredBufferSize += bone.translation.values[i].length * 3 * 4;
-								break;
-							}
-						}
-
-						for (let i = 0; i < bone.scale.values.length; i++) {
-							if (i == animationIndex && bone.scale.interpolation < 2) {
-								requiredBufferSize += bone.scale.values[i].length * 3 * 4;
 								break;
 							}
 						}
@@ -793,8 +804,11 @@ class GLTFWriter {
 
 				if (bone.scale.interpolation < 2) {
 					// SCALING
-					for (let i = 0; i < bone.scale.timestamps.length; i++) {
-						if (bone.scale.timestamps[i].length == 0)
+					// iterate every animation, not the track's own array length: a bone scaled
+					// only in animation 0 may store a single-entry track
+					for (let i = 0; i < this.animations.length; i++) {
+						const scale_track = get_bone_scale_track(bone, i);
+						if (!scale_track)
 							continue;
 
 						const animName = this.animations[i].id + "-" + this.animations[i].variationIndex;
@@ -803,8 +817,8 @@ class GLTFWriter {
 						// pair timestamps with values and sort to maintain gltf 2.0 spec compliance
 						const anim_duration = this.animations[i].duration;
 						const paired = [];
-						for (let j = 0; j < bone.scale.timestamps[i].length; j++) {
-							const raw_ts = bone.scale.timestamps[i][j];
+						for (let j = 0; j < scale_track.timestamps.length; j++) {
+							const raw_ts = scale_track.timestamps[j];
 							let norm_ts = raw_ts;
 							if (anim_duration > 0) {
 								norm_ts = raw_ts % anim_duration;
@@ -813,7 +827,7 @@ class GLTFWriter {
 									norm_ts = anim_duration;
 							}
 							const time = norm_ts / 1000;
-							paired.push({ time, value: bone.scale.values[i][j] });
+							paired.push({ time, value: scale_track.values[j] });
 						}
 
 						// sort by time to ensure strictly increasing timestamps (required by gltf 2.0 spec)
@@ -905,7 +919,7 @@ class GLTFWriter {
 
 						root.animations[i].samplers[root.animations[i].samplers.length - 1].output = root.accessors.length - 1;
 
-						root.accessors[root.accessors.length - 1].count = bone.scale.values[i].length;
+						root.accessors[root.accessors.length - 1].count = paired.length;
 
 						root.animations[i].channels.push(
 							{	
