@@ -7,7 +7,8 @@ material alpha. Limited to WoW Classic. Target consumer is Unity via glTF.
 Updated 2026-09-17: the attachment fix (#1) is verified against a real Classic
 client, the glTF alpha/double-sided bug (#5) is fixed and verified, and the
 project now builds locally (see "Building locally"). Also fixed: customization
-choices that enable several geosets only applied one (#7).
+choices that enable several geosets only applied one (#7), and attachment
+bones lost their scale in most glTF animations (#8).
 
 ## How the viewer places attachments
 
@@ -44,8 +45,13 @@ M2 bones have no rest-pose scale, only animated scale tracks. Those tracks *are*
 exported as glTF `scale` animation channels (`GLTFWriter.js`), so a mesh
 parented to a joint inherits them for free when animations are exported.
 
-An earlier claim in this session that bone scale tracks drive the per-race
-difference was overstated — in rest pose it is the pivots and offsets.
+Correction (2026-09-17): bone scale *is* a per-race size mechanism for
+shoulders. The shoulder attachment bones carry a constant scale in the model's
+first animation only: 1.7 on Orc male (`bone_106`/`107`, first animation
+Stand) and 1.6 on Tauren male (`bone_116`/`117`, first animation Walk). The
+renderer applies that scale to every animation (see #8). Pivots and offsets
+still decide placement; this decides size. A rest-pose export with no
+animation playing shows the pauldrons at 1x.
 
 ## Bugs found
 
@@ -62,10 +68,12 @@ Fixed in commit `58fe6333` (see "Changes applied" below).
 
 Verified on a Classic Tauren with pauldrons, exported as glTF with
 `modelsExportAnimations` on: the pauldrons sit on the shoulders, follow the
-bones through animations, and are the right size, in both Blender and Unity
-(glTFast). No scale is needed on the attachment node — the vtube project's
-manual `gearScale` of 1.8 was compensating for the broken export, not for
-missing data.
+bones through animations, in both Blender and Unity (glTFast).
+
+Correction: "the right size" held only for the Orc in Stand, which happens to
+be the one animation carrying the shoulder bones' scale. Other animations and
+the Tauren were too small until #8. The vtube project's manual `gearScale` of
+1.8 was approximating that missing 1.6-1.7 bone scale.
 
 ### 2. OBJ/STL: wrong transform — NOT FIXED
 
@@ -183,6 +191,43 @@ Not done: saving manual Geoset Control overrides. With this fix it was no longer
 needed. If it ever is, record user toggles as `geoset_overrides` (id -> bool),
 reapply them at the end of `update_geosets`, clear them on race/model change,
 and pass them through `chrImport*` state on load (save format version 3).
+
+### 8. glTF: attachment bones lose their scale outside animation 0 — FIXED, VERIFIED
+
+Symptom: pauldrons looked right in the Orc's Stand but shrank in Wave and every
+other animation; Tauren pauldrons were always too small.
+
+The shoulder attachment bones have a scale track with keys only in animation 0
+(the M2's first sequence, which is Stand for Orc male but Walk for Tauren
+male). The M2 renderer handles this: `M2RendererGL.js` `has_scale_fallback`
+samples animation 0's scale at time 0 for any animation without its own scale
+data (upstream `eb5dbd17`, "fix item attachment scale"). `GLTFWriter` wrote
+scale channels only where keys exist, so glTF consumers left the bone at scale
+1 in every other animation.
+
+Fixed in commit `e3294fbe`: `get_bone_scale_track(bone, anim_index)` returns the
+animation's own scale keys, or a single key of animation 0's first value when
+the animation has none, mirroring the renderer. Buffer sizing and channel
+writing both use it. Applies to every bone, as in the renderer.
+
+Pitfall hit while fixing: the scale loop iterated `bone.scale.timestamps.length`.
+The outer track array length comes from the file, and a bone scaled only in
+animation 0 can store a single-entry track, so the loop never reached the
+animations needing the fallback. The first attempt passed a synthetic test
+(one entry per animation) but changed nothing on real exports. The loop now
+iterates `this.animations.length`. The renderer reads with optional chaining
+(`timestamps?.[idx]`) and never had this problem. Translation and rotation
+loops still iterate the track length, which is fine because they have no
+fallback.
+
+Verified in vtube: Orc pauldrons hold 1.7x and Tauren 1.6x across Stand, Wave
+and other emotes.
+
+Testing tip: `GLTFWriter` can be run under plain Node by stubbing `core`, `log`
+and `generics` via `Module._load` and defining `global.nw.App.manifest`, then
+feeding it synthetic bones and animations. That is how the single-entry track
+case was reproduced without a client. Make synthetic tracks match what the
+loader really produces.
 
 ## Changes applied (commit 58fe6333, pushed to origin/main)
 
@@ -304,8 +349,9 @@ URIs point outside the export folder, e.g. `..\..\..\item\...`).
 
 - `origin` -> `git@github.com:marhag87/wow.export.git` (fork)
 - `upstream` -> `https://github.com/Kruithne/wow.export.git`
-- `58fe6333` (attachment parenting), `42a67c4a` (material alpha) and
-  `5b241122` (customization geosets) pushed to `origin/main`.
+- `58fe6333` (attachment parenting), `42a67c4a` (material alpha),
+  `5b241122` (customization geosets) and `e3294fbe` (attachment bone scale)
+  pushed to `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
@@ -331,8 +377,8 @@ large contributions should start with a tracking issue coordinated in the
 ## Suggested next steps
 
 Done: local build, Classic Tauren pauldron placement (#1), glTF material alpha
-and double-sidedness (#5), customization geosets (#7), vtube cleanup (done in
-the vtube repo).
+and double-sidedness (#5), customization geosets (#7), attachment bone scale in
+animations (#8), vtube cleanup (done in the vtube repo).
 
 1. Test a one-handed weapon on the same character — a sword offset from the
    hand is the clearest check of attachment placement. Note the fingers will
