@@ -1188,6 +1188,7 @@ async function import_character(core) {
 	if (res.ok) {
 		try {
 			await apply_import_data(core, await res.json(), 'bnet');
+			core.view.chrExportName = character_name;
 		} catch (e) {
 			log.write('Failed to parse character data: %s', e.message);
 			core.setToast('error', 'Failed to import character ' + character_label, null, -1);
@@ -1514,6 +1515,8 @@ async function save_character(core, name, thumb_data) {
 		await fsp.writeFile(thumb_path, buffer);
 	}
 
+	core.view.chrExportName = name;
+
 	await load_saved_characters(core);
 	core.setToast('success', `Character "${name}" saved.`, null, 3000);
 }
@@ -1552,6 +1555,7 @@ async function load_character(core, character) {
 
 		core.view.chrModelLoading = true;
 		core.view.chrSavedCharactersScreen = false;
+		core.view.chrExportName = character.name;
 
 		// apply equipment
 		const equipment = data.equipment || {};
@@ -1921,6 +1925,25 @@ function update_chr_race_list(core) {
 //endregion
 
 //region export
+/**
+ * Resolve the export-relative path for a character model file. With
+ * chrExportToNamedFolder enabled the file goes to <character name>/<model file>,
+ * otherwise it keeps the listfile path (e.g. character/tauren/male/...).
+ * @returns {string|null} null if the named folder is enabled but no usable name is set
+ */
+function get_character_export_file(core, file_name, ext) {
+	const model_file = ExportHelper.replaceExtension(file_name, ext);
+	if (!core.view.config.chrExportToNamedFolder)
+		return model_file;
+
+	// strip characters windows does not allow in folder names, and trailing dots/spaces
+	const folder = core.view.chrExportName.replace(/[<>:"\/\\|?*\x00-\x1f]/g, '').trim().replace(/[. ]+$/, '');
+	if (folder.length === 0)
+		return null;
+
+	return path.join(folder, path.basename(model_file));
+}
+
 const export_char_model = async (core) => {
 	const export_paths = core.openLastExportStream();
 	const format = core.view.config.exportCharacterFormat;
@@ -1962,14 +1985,20 @@ const export_char_model = async (core) => {
 		return;
 	}
 
+	const file_data_id = active_model;
+	const file_name = listfile.getByID(file_data_id);
+
+	if (core.view.config.chrExportToNamedFolder && get_character_export_file(core, file_name, '.gltf') === null) {
+		core.setToast('error', 'Enter a character name to export into its own folder.', null, -1);
+		export_paths?.close();
+		return;
+	}
+
 	const helper = new ExportHelper(1, 'model');
 	helper.start();
 
 	if (helper.isCancelled())
 		return;
-
-	const file_data_id = active_model;
-	const file_name = listfile.getByID(file_data_id);
 
 	try {
 		if (format === 'OBJ' || format === 'STL') {
@@ -1980,7 +2009,7 @@ const export_char_model = async (core) => {
 			}
 
 			const ext = format === 'STL' ? '.stl' : '.obj';
-			const mark_file_name = ExportHelper.replaceExtension(file_name, ext);
+			const mark_file_name = get_character_export_file(core, file_name, ext);
 			const export_path = ExportHelper.getExportPath(mark_file_name);
 
 			const casc = core.view.casc;
@@ -2047,7 +2076,7 @@ const export_char_model = async (core) => {
 		} else {
 			const casc = core.view.casc;
 			const data = await casc.getFile(file_data_id);
-			const mark_file_name = ExportHelper.replaceExtension(file_name, '.gltf');
+			const mark_file_name = get_character_export_file(core, file_name, '.gltf');
 			const export_path = ExportHelper.getExportPath(mark_file_name);
 			const exporter = new M2Exporter(data, [], file_data_id);
 
@@ -2406,6 +2435,13 @@ module.exports = {
 								<input type="checkbox" v-model="$core.view.config.chrExportApplyPose"/>
 								<span>Apply pose</span>
 							</label>
+							<template v-if="$core.view.config.exportCharacterFormat !== 'PNG' && $core.view.config.exportCharacterFormat !== 'CLIPBOARD'">
+								<label class="ui-checkbox" title="Export into a folder named after the character inside the export directory, instead of the model's game path">
+									<input type="checkbox" v-model="$core.view.config.chrExportToNamedFolder"/>
+									<span>Export to character folder</span>
+								</label>
+								<input type="text" class="chr-export-name" size="1" v-if="$core.view.config.chrExportToNamedFolder" v-model="$core.view.chrExportName" placeholder="Character Name"/>
+							</template>
 							<component :is="$components.MenuButton" :options="$core.view.menuButtonCharacterExport" :default="$core.view.config.exportCharacterFormat" @change="$core.view.config.exportCharacterFormat = $event" :disabled="$core.view.chrModelLoading" @click="export_character"></component>
 						</div>
 						<div class="character-export-menu" v-show="$core.view.chrExportMenu == 'textures'">

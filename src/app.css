@@ -3537,6 +3537,14 @@ input[type=number]::-webkit-outer-spin-button {
 	margin-top: 5px;
 }
 
+/* fill the panel width without widening it (overrides the global 300px text input width) */
+.character-export-menu input[type=text].chr-export-name {
+	width: auto;
+	min-width: 0;
+	margin: 0;
+	box-sizing: border-box;
+}
+
 .texture-menu-controls {
 	display: flex;
 	justify-content: space-between;
