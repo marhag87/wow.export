@@ -8,7 +8,8 @@ Updated 2026-09-17: the attachment fix (#1) is verified against a real Classic
 client, the glTF alpha/double-sided bug (#5) is fixed and verified, and the
 project now builds locally (see "Building locally"). Also fixed: customization
 choices that enable several geosets only applied one (#7), and attachment
-bones lost their scale in most glTF animations (#8).
+bones lost their scale in most glTF animations (#8). Added: an option to export
+characters into a folder named after the character (see "Features added").
 
 ## How the viewer places attachments
 
@@ -229,6 +230,37 @@ feeding it synthetic bones and animations. That is how the single-entry track
 case was reproduced without a client. Make synthetic tracks match what the
 loader really produces.
 
+## Features added
+
+### Export characters to a named folder (commit 1a452efe)
+
+Character exports always went to `<Export Directory>/<listfile path>`, e.g.
+`character/tauren/male/taurenmale.gltf`, so every Tauren male export landed in
+the same folder. A new **Export to character folder** checkbox in the character
+export panel (config `chrExportToNamedFolder`, default off) writes to
+`<Export Directory>/<Character Name>/<model file>` instead.
+
+- A **Character Name** text box appears when the checkbox is on. View state
+  `chrExportName` is filled on load from My Characters, on save, and on a
+  successful Armory import, and can be edited before each export. It is not
+  persisted across restarts.
+- Applies to glTF, GLB, OBJ and STL; the checkbox is hidden for PNG/Clipboard.
+- `get_character_export_file(core, file_name, ext)` in `tab_characters.js`
+  resolves the export-relative path used for both the export path and
+  `helper.mark`, so "View in Explorer" opens the character folder. Characters
+  Windows rejects (`<>:"/\|?*`, control characters) and trailing dots/spaces
+  are stripped; an empty result aborts the export with a toast before the
+  export helper starts. `removePathSpaces` applies as for any export path.
+- With `enableSharedTextures` off, textures land in the character folder; with
+  it on they still go to the shared game paths.
+- Layout pitfall: the global `input[type=text]` rule in `app.css` sets
+  `width: 300px` and `margin: 10px`, which widened the export panel. The name
+  box uses class `chr-export-name` (`width: auto; min-width: 0; margin: 0;
+  box-sizing: border-box`) plus `size="1"` so its intrinsic width cannot grow
+  the panel.
+
+Verified in the app.
+
 ## Changes applied (commit 58fe6333, pushed to origin/main)
 
 | File | Change |
@@ -311,6 +343,18 @@ rest pose with no clips and no scale channels to inherit. WoW skeletons do not
 map to Unity's humanoid avatar without manual bone assignment; route through
 Blender if humanoid retargeting is needed.
 
+Exports look washed out in Blender and Unity compared to the wow.export preview.
+This is lighting, not the export: materials are a plain base colour texture
+with `metallicFactor: 0` and default roughness. The preview's M2 shader
+(`m2.fragment.shader` `calc_lighting`, uniforms in `M2RendererGL.js`) is plain
+Lambert with ambient 0.5 + diffuse 0.7 * N.L, no specular, no tone mapping and
+no colour-space conversion, so lit faces reach 1.2x texture colour and clip,
+reading as saturated. PBR adds a Fresnel sheen, environment ambient, and (in
+Blender by default, in URP if a volume enables it) tone mapping. Checks:
+Blender View Transform -> Standard; Unity tonemapping and environment lighting.
+Options not taken yet: a `KHR_materials_unlit` export option, or a vtube shader
+replicating the preview's lighting.
+
 ## Building locally
 
 Much faster than the CI artifact: `win-x64-debug` builds in about 20s, and its
@@ -343,15 +387,17 @@ Gotchas hit:
 
 Export settings that give vtube a clean export: glTF format,
 `modelsExportAnimations` on, `enableSharedTextures` **off** (otherwise texture
-URIs point outside the export folder, e.g. `..\..\..\item\...`).
+URIs point outside the export folder, e.g. `..\..\..\item\...`), and
+optionally **Export to character folder** so each character gets its own folder
+in the vtube avatars directory.
 
 ## Repo / CI state
 
 - `origin` -> `git@github.com:marhag87/wow.export.git` (fork)
 - `upstream` -> `https://github.com/Kruithne/wow.export.git`
 - `58fe6333` (attachment parenting), `42a67c4a` (material alpha),
-  `5b241122` (customization geosets) and `e3294fbe` (attachment bone scale)
-  pushed to `origin/main`.
+  `5b241122` (customization geosets), `e3294fbe` (attachment bone scale) and
+  `1a452efe` (export to character folder) pushed to `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
@@ -378,7 +424,8 @@ large contributions should start with a tracking issue coordinated in the
 
 Done: local build, Classic Tauren pauldron placement (#1), glTF material alpha
 and double-sidedness (#5), customization geosets (#7), attachment bone scale in
-animations (#8), vtube cleanup (done in the vtube repo).
+animations (#8), export to character folder, vtube cleanup (done in the vtube
+repo).
 
 1. Test a one-handed weapon on the same character — a sword offset from the
    hand is the clearest check of attachment placement. Note the fingers will
