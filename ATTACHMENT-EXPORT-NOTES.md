@@ -9,7 +9,8 @@ client, the glTF alpha/double-sided bug (#5) is fixed and verified, and the
 project now builds locally (see "Building locally"). Also fixed: customization
 choices that enable several geosets only applied one (#7), and attachment
 bones lost their scale in most glTF animations (#8). Added: an option to export
-characters into a folder named after the character (see "Features added").
+characters into a folder named after the character, and saving updates the open
+saved character in place (see "Features added").
 
 ## How the viewer places attachments
 
@@ -241,9 +242,9 @@ export panel (config `chrExportToNamedFolder`, default off) writes to
 `<Export Directory>/<Character Name>/<model file>` instead.
 
 - A **Character Name** text box appears when the checkbox is on. View state
-  `chrExportName` is filled on load from My Characters, on save, and on a
-  successful Armory import, and can be edited before each export. It is not
-  persisted across restarts.
+  `chrExportName` follows the open saved character (see the next feature),
+  is set to the typed name on a successful Armory import, and can be edited
+  before each export. It is not persisted across restarts.
 - Applies to glTF, GLB, OBJ and STL; the checkbox is hidden for PNG/Clipboard.
 - `get_character_export_file(core, file_name, ext)` in `tab_characters.js`
   resolves the export-relative path used for both the export path and
@@ -258,6 +259,41 @@ export panel (config `chrExportToNamedFolder`, default off) writes to
   box uses class `chr-export-name` (`width: auto; min-width: 0; margin: 0;
   box-sizing: border-box`) plus `size="1"` so its intrinsic width cannot grow
   the panel.
+
+Verified in the app.
+
+### Save updates the open character (commit 2c00e8c2)
+
+Before: every save went through the name prompt (emptied each time) and
+`save_character` always generated a new random id, so re-saving a loaded
+character after a gear change added a duplicate to My Characters. Saving was
+also the only automatic way to fill the export folder name.
+
+Now the viewer tracks which saved character is open:
+
+- View state `chrCurrentCharacter` (`{ name, id }` or null), set through
+  `set_current_character(core, character)` in `tab_characters.js`, which also
+  sets `chrExportName` to the character's name (or clears it).
+- Set on load from My Characters and on save / save-as-new. Cleared by
+  `apply_import_data` (Armory, WMV, Wowhead) and by loading a JSON file
+  straight into the viewer (which then uses the file's `name` for the export
+  name if present). Deleting the open character clears the tracking but keeps
+  the character in the viewer.
+- `save_character(core, name, thumb, existing_id = null)` overwrites
+  `<name>-<id>.json` and its thumbnail when given an id, otherwise creates a new
+  entry. The toast says "updated" vs "saved".
+- The viewer's quick-save button and the My Characters save button call
+  `save_current_character`: overwrite without a prompt when a character is
+  open ("Save Hoom" as label/tooltip), otherwise open the name prompt.
+- **Save As New** (My Characters, only shown with a character open) opens the
+  prompt pre-filled with the current name, titled "Save As New Character"; it
+  always creates a new entry, which becomes the open character.
+- The open character's card gets a highlighted thumbnail border
+  (`.saved-character-card.current`).
+
+Not done (considered): remembering the open character or export name across
+restarts (config, or reopening the last character on startup), and a separate
+per-character export folder name stored in the save file.
 
 Verified in the app.
 
@@ -396,8 +432,9 @@ in the vtube avatars directory.
 - `origin` -> `git@github.com:marhag87/wow.export.git` (fork)
 - `upstream` -> `https://github.com/Kruithne/wow.export.git`
 - `58fe6333` (attachment parenting), `42a67c4a` (material alpha),
-  `5b241122` (customization geosets), `e3294fbe` (attachment bone scale) and
-  `1a452efe` (export to character folder) pushed to `origin/main`.
+  `5b241122` (customization geosets), `e3294fbe` (attachment bone scale),
+  `1a452efe` (export to character folder) and `2c00e8c2` (save updates the open
+  character) pushed to `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
@@ -424,8 +461,8 @@ large contributions should start with a tracking issue coordinated in the
 
 Done: local build, Classic Tauren pauldron placement (#1), glTF material alpha
 and double-sidedness (#5), customization geosets (#7), attachment bone scale in
-animations (#8), export to character folder, vtube cleanup (done in the vtube
-repo).
+animations (#8), export to character folder, save updates the open character,
+vtube cleanup (done in the vtube repo).
 
 1. Test a one-handed weapon on the same character — a sword offset from the
    hand is the clearest check of attachment placement. Note the fingers will
