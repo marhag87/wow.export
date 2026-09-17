@@ -1281,6 +1281,9 @@ function expand_shoulder_slots(equipment, equipment_skins) {
  * Sets all state first, then triggers model selection which loads the model.
  */
 async function apply_import_data(core, data, source) {
+	// an imported character is not a saved one, so saving it creates a new entry
+	set_current_character(core, null);
+
 	let race_id, gender_index, customizations, equipment, equipment_skins = {};
 
 	if (source === 'bnet') {
@@ -1491,15 +1494,33 @@ async function load_saved_characters(core) {
 	core.view.chrSavedCharacters = characters;
 }
 
-async function save_character(core, name, thumb_data) {
+/**
+ * Track which saved character is open in the viewer. Also fills the export
+ * folder name, so exports default to the open character.
+ * @param {object|null} character - { name, id } or null for an unsaved character
+ */
+function set_current_character(core, character) {
+	core.view.chrCurrentCharacter = character ? { name: character.name, id: character.id } : null;
+	core.view.chrExportName = character?.name ?? '';
+}
+
+/**
+ * Save the current character. With an existing id the saved entry is
+ * overwritten in place, otherwise a new entry is created.
+ * @param {string|null} [existing_id]
+ */
+async function save_character(core, name, thumb_data, existing_id = null) {
 	const dir = get_saved_characters_dir(core);
 	await generics.createDirectory(dir);
 
-	// generate unique id
-	let id = generate_character_id();
-	const existing_ids = core.view.chrSavedCharacters.map(c => c.id);
-	while (existing_ids.includes(id))
+	let id = existing_id;
+	if (id === null) {
+		// generate unique id
 		id = generate_character_id();
+		const existing_ids = core.view.chrSavedCharacters.map(c => c.id);
+		while (existing_ids.includes(id))
+			id = generate_character_id();
+	}
 
 	// gather character data
 	const data = get_current_character_data(core);
@@ -1515,10 +1536,10 @@ async function save_character(core, name, thumb_data) {
 		await fsp.writeFile(thumb_path, buffer);
 	}
 
-	core.view.chrExportName = name;
+	set_current_character(core, { name, id });
 
 	await load_saved_characters(core);
-	core.setToast('success', `Character "${name}" saved.`, null, 3000);
+	core.setToast('success', existing_id === null ? `Character "${name}" saved.` : `Character "${name}" updated.`, null, 3000);
 }
 
 async function delete_character(core, character) {
@@ -1542,6 +1563,10 @@ async function delete_character(core, character) {
 	if (index !== -1)
 		core.view.chrSavedCharacters.splice(index, 1);
 
+	// the viewer keeps the character, but saving it again must create a new entry
+	if (core.view.chrCurrentCharacter?.id === character.id)
+		core.view.chrCurrentCharacter = null;
+
 	core.setToast('success', `Character "${character.name}" deleted.`, null, 3000);
 }
 
@@ -1555,7 +1580,7 @@ async function load_character(core, character) {
 
 		core.view.chrModelLoading = true;
 		core.view.chrSavedCharactersScreen = false;
-		core.view.chrExportName = character.name;
+		set_current_character(core, character);
 
 		// apply equipment
 		const equipment = data.equipment || {};
@@ -1847,6 +1872,8 @@ async function import_json_character(core, save_to_my_characters) {
 				// load directly into viewer
 				core.view.chrModelLoading = true;
 				core.view.chrSavedCharactersScreen = false;
+				set_current_character(core, null);
+				core.view.chrExportName = data.name ?? '';
 
 				core.view.chrEquippedItems = equipment;
 				core.view.chrEquippedItemSkins = equipment_skins;
@@ -2236,7 +2263,7 @@ module.exports = {
 			<div v-show="$core.view.chrSavedCharactersScreen" class="saved-characters-screen">
 				<div class="saved-characters-header">My Characters</div>
 				<div class="saved-characters-grid">
-					<div v-for="character in $core.view.chrSavedCharacters" :key="character.id" class="saved-character-card" @click="on_load_character(character)">
+					<div v-for="character in $core.view.chrSavedCharacters" :key="character.id" class="saved-character-card" :class="{ current: $core.view.chrCurrentCharacter?.id === character.id }" @click="on_load_character(character)">
 						<div class="saved-character-thumb" :style="{ backgroundImage: character.thumb ? 'url(' + character.thumb + ')' : 'none' }">
 							<div class="saved-character-actions">
 								<input type="button" value="" title="Export Character" class="ui-image-button saved-char-export-btn" @click.stop="on_export_character(character)"/>
@@ -2248,7 +2275,8 @@ module.exports = {
 				</div>
 				<div class="saved-characters-gutter">
 					<div class="saved-characters-gutter-left">
-						<input type="button" value="Save Character" class="ui-button" @click="open_save_prompt"/>
+						<input type="button" :value="$core.view.chrCurrentCharacter ? 'Save ' + $core.view.chrCurrentCharacter.name : 'Save Character'" class="ui-button" @click="save_current_character"/>
+						<input type="button" value="Save As New" class="ui-button" v-if="$core.view.chrCurrentCharacter" @click="open_save_prompt"/>
 						<input type="button" value="Import Character" class="ui-button" @click="import_json_to_saved"/>
 					</div>
 					<input type="button" value="Back" class="ui-button" @click="$core.view.chrSavedCharactersScreen = false"/>
@@ -2256,7 +2284,7 @@ module.exports = {
 			</div>
 			<div v-if="$core.view.chrSaveCharacterPrompt" class="chr-save-prompt-overlay" @click.self="$core.view.chrSaveCharacterPrompt = false">
 				<div class="chr-save-prompt">
-					<div class="header"><b>Save Character</b></div>
+					<div class="header"><b>{{ $core.view.chrCurrentCharacter ? 'Save As New Character' : 'Save Character' }}</b></div>
 					<input type="text" v-model="$core.view.chrSaveCharacterName" placeholder="Character Name" @keyup.enter="confirm_save_character"/>
 					<input type="button" value="Save" @click="confirm_save_character"/>
 				</div>
@@ -2281,7 +2309,7 @@ module.exports = {
 			<div class="character-import-buttons">
 				<div class="character-button-group">
 					<input type="button" value="My Characters" title="My Characters" class="ui-image-button character-save-button" @click="open_saved_characters"/>
-					<input type="button" value="" title="Save Character" class="ui-image-button character-quick-save-button" @click="open_save_prompt"/>
+					<input type="button" value="" :title="$core.view.chrCurrentCharacter ? 'Save ' + $core.view.chrCurrentCharacter.name : 'Save Character'" class="ui-image-button character-quick-save-button" @click="save_current_character"/>
 				</div>
 				<div class="character-button-group">
 					<input type="button" value="" title="Import JSON" class="ui-image-button character-import-json-button" @click="import_json"/>
@@ -2658,10 +2686,19 @@ module.exports = {
 			this.$core.view.chrSavedCharactersScreen = true;
 		},
 
+		async save_current_character() {
+			const current = this.$core.view.chrCurrentCharacter;
+			if (!current)
+				return this.open_save_prompt();
+
+			const thumb = await capture_character_thumbnail(this.$core);
+			await save_character(this.$core, current.name, thumb, current.id);
+		},
+
 		async open_save_prompt() {
 			// capture thumbnail while still viewing the character
 			this.$core.view.chrPendingThumbnail = await capture_character_thumbnail(this.$core);
-			this.$core.view.chrSaveCharacterName = '';
+			this.$core.view.chrSaveCharacterName = this.$core.view.chrCurrentCharacter?.name ?? '';
 			this.$core.view.chrSaveCharacterPrompt = true;
 		},
 

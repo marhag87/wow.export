@@ -255,6 +255,7 @@ const makeNewView = () => {
 		chrShowGeosetControl: false, // Controls whether geoset control view is shown instead of customization.
 		chrExportMenu: 'export', // Active menu in character export section ('export', 'textures', 'settings').
 		chrExportName: '', // Folder name for character exports when chrExportToNamedFolder is enabled.
+		chrCurrentCharacter: null, // { name, id } of the saved character open in the viewer, or null.
 		colorPickerOpenFor: null, // Currently open color picker option ID.
 		colorPickerPosition: { x: 0, y: 0 }, // Color picker popup position.
 		chrImportChrName: '', // Character import, character name input.

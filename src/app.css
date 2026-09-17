@@ -3205,6 +3205,10 @@ input[type=number]::-webkit-outer-spin-button {
 	transform: scale(1.02);
 }
 
+.saved-character-card.current .saved-character-thumb {
+	border-color: var(--font-highlight);
+}
+
 .saved-character-thumb {
 	width: 150px;
 	height: 150px;
