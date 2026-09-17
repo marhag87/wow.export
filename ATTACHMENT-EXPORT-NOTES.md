@@ -4,6 +4,10 @@ Session notes, 2026-09-16. Scope: why equipped pauldrons (and other attached
 items) do not appear in the right place on exported character models, plus glTF
 material alpha. Limited to WoW Classic. Target consumer is Unity via glTF.
 
+Updated 2026-09-17: the attachment fix (#1) is verified against a real Classic
+client, the glTF alpha/double-sided bug (#5) is fixed and verified, and the
+project now builds locally (see "Building locally").
+
 ## How the viewer places attachments
 
 1. `SLOT_TO_ATTACHMENT` in `src/js/wow/EquipmentSlots.js` maps an equipment slot
@@ -44,7 +48,7 @@ difference was overstated — in rest pose it is the pivots and offsets.
 
 ## Bugs found
 
-### 1. glTF: attachment link never written — FIXED
+### 1. glTF: attachment link never written — FIXED, VERIFIED
 
 `tab_characters.js` calls `get_equipment_geometry(false)` for glTF, deliberately
 leaving the pose to the armature. But attachment models carry no bone weights
@@ -54,6 +58,13 @@ ignored by every consumer. Net result: attached items exported at the origin,
 unparented and unrigged.
 
 Fixed in commit `58fe6333` (see "Changes applied" below).
+
+Verified on a Classic Tauren with pauldrons, exported as glTF with
+`modelsExportAnimations` on: the pauldrons sit on the shoulders, follow the
+bones through animations, and are the right size, in both Blender and Unity
+(glTFast). No scale is needed on the attachment node — the vtube project's
+manual `gearScale` of 1.8 was compensating for the broken export, not for
+missing data.
 
 ### 2. OBJ/STL: wrong transform — NOT FIXED
 
@@ -86,7 +97,10 @@ attachments by index, so a single-model shield takes `attachment_ids[0]` =
 Affects the viewer and the export equally. Needs confirming against a real
 shield.
 
-### 5. glTF: texture alpha ignored, materials never double-sided — NOT FIXED
+### 5. glTF: texture alpha ignored, materials never double-sided — FIXED, VERIFIED
+
+Fixed in commit `42a67c4a` (see "Changes applied" below). Tauren hair renders
+correctly in Blender and Unity. The analysis as originally written follows.
 
 Symptom: Tauren hair (and any alpha-keyed geometry — foliage, tabard fringes,
 eyebrows) exports as solid slabs.
@@ -124,12 +138,14 @@ Not tracked as an open upstream bug against the writer. Issue #392
 ("Transparent textures in blender", closed) is the same complaint, answered with
 DCC-side workarounds rather than an export fix.
 
-Workaround until fixed: Blender -> set material blend mode to Alpha Clip and
-disable backface culling; Unity/glTFast -> switch the generated material's
-surface type to Cutout. Both must be redone on every re-import.
+The fix went the "properly" route rather than the ~30-line character hack:
+materials are keyed by (texture, alphaMode, doubleSided) and created on first
+use. Blend modes 3-7 (additive, modulate) have no glTF equivalent and are
+approximated as BLEND. The MASK cutoff is 0.501960814, the same threshold the
+viewer's M2 shader uses. The OBJ TODO at `M2Exporter.js:148` is still open.
 
-Unverified: that Tauren hair specifically uses blendingMode 1. Confirm against a
-real client before assuming MASK is the right mode for it.
+Which blend mode Tauren hair uses was not recorded; the result renders
+correctly either way. Search the exported `.gltf` for `"alphaMode"` to see it.
 
 ### 6. Hand grip is viewer-only — BY DESIGN, WORTH KNOWING
 
@@ -147,22 +163,22 @@ exported fingers stay open around a weapon.
 | `src/js/3D/exporters/M2Exporter.js` | Passes them to `addEquipmentModel`, suppressed for collection-style pieces. |
 | `src/js/3D/writers/GLTFWriter.js` | Replaces the inert `node.parent_bone` with real parenting: the mesh node goes into the joint's `children` with `translation = offset - pivot`. Adds `joint_node_index_map`, populated in the bone loop, accounting for the `modelsExportWithBonePrefix` node offset. |
 
-All five files pass `node --check`. **Nothing has been tested against a real
-client.**
+Tested against a Classic client — see bug #1.
 
-## Open assumption to verify first
+## Changes applied (commit 42a67c4a, pushed to origin/main)
 
-`translation = attachment_offset - bone.pivot` assumes the attachment `position`
-is in model space, the same frame as `pivot`. This follows from what the
-renderer does (`bone_world * translate(position)`, where the bone world matrix
-is built from pivots) but has not been confirmed against an export.
+| File | Change |
+| --- | --- |
+| `src/js/3D/writers/GLTFWriter.js` | `addMesh` and equipment meshes take `matProps` (`{ blendingMode, flags }`). Images and textures are still written per texture; materials are created on demand per (texture, alphaMode, doubleSided), with `alphaMode`, `alphaCutoff` and `doubleSided` set from the M2 material. A second variant of the same texture gets a suffixed name (e.g. `_mask_2s`). Meshes without props (WMO, M3) produce the same output as before. |
+| `src/js/3D/exporters/M2Exporter.js` | Passes `m2.materials[texUnit.materialIndex]` for character submeshes and equipment submeshes. |
 
-- Items doubled out from the joint -> the offset is bone-local, drop the
-  subtraction.
-- Items inside the torso -> the sign or axis swap is wrong.
+## Open assumption — RESOLVED
 
-Test with a one-handed weapon first. A misplaced pauldron near the shoulder
-reads as a tuning problem; a sword offset from the hand is unmistakable.
+`translation = attachment_offset - bone.pivot` assumed the attachment
+`position` is in model space, the same frame as `pivot`. Confirmed: pauldrons
+land on the shoulders, neither pushed out from the joint nor inside the torso.
+Only tested with `modelsExportWithBonePrefix` at one setting, and without a
+weapon.
 
 ## Classic vs retail
 
@@ -219,11 +235,46 @@ rest pose with no clips and no scale channels to inherit. WoW skeletons do not
 map to Unity's humanoid avatar without manual bone assignment; route through
 Blender if humanoid retargeting is needed.
 
+## Building locally
+
+Much faster than the CI artifact: `win-x64-debug` builds in about 20s, and its
+`src` is a junction to the repo, so source edits need only
+`chrome.runtime.reload()` in DevTools (not F5), no rebuild.
+
+Requirements (Windows): Bun >= 1.2, Node 22+ (Node 14 is too old for current
+node-gyp), `node-gyp` installed globally, Python, and MSVC build tools for the
+`mmap` native addon.
+
+```
+npm.cmd install -g node-gyp@latest
+bun install
+bun ./build.js win-x64-debug
+bin\win-x64-debug\nw.exe
+```
+
+Gotchas hit:
+
+- **Run the build from PowerShell or cmd, not Git Bash.** The addon script
+  shells out to `tar` with a `C:\...` path; Git Bash's GNU tar reads `C:` as a
+  remote host ("Cannot connect to C: resolve failed"). Windows'
+  `System32\tar.exe` works.
+- `npm install -g` in PowerShell fails under the default execution policy
+  because it runs `npm.ps1`. Use `npm.cmd` instead.
+- VS 2019 Build Tools ignores `/std:c++20` with warnings but the addon still
+  compiles and works. If it ever fails, install VS 2022 Build Tools.
+- `bun install` with Bun 1.4 rewrites `bun.lock` and `node_addons/mmap/bun.lock`.
+  Keep those out of commits.
+
+Export settings that give vtube a clean export: glTF format,
+`modelsExportAnimations` on, `enableSharedTextures` **off** (otherwise texture
+URIs point outside the export folder, e.g. `..\..\..\item\...`).
+
 ## Repo / CI state
 
 - `origin` -> `git@github.com:marhag87/wow.export.git` (fork)
 - `upstream` -> `https://github.com/Kruithne/wow.export.git`
-- `58fe6333` pushed to `origin/main`.
+- `58fe6333` (attachment parenting) and `42a67c4a` (material alpha) pushed to
+  `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
@@ -248,15 +299,20 @@ large contributions should start with a tracking issue coordinated in the
 
 ## Suggested next steps
 
-1. Build locally (`bun install && bun build.js win-x64-debug`), load a Classic
-   client, equip a one-hander plus pauldrons, export glTF, check placement in
-   Blender or Unity. Resolve the open assumption above.
-2. Repeat across a few races with visibly different builds (Tauren, Gnome,
-   Human) to confirm per-race placement, with `modelsExportWithBonePrefix` both
-   on and off.
-3. Fix glTF material alpha and double-sidedness (#5 above) — needed for hair,
-   foliage and any alpha-keyed geometry.
+Done: local build, Classic Tauren pauldron placement (#1), glTF material alpha
+and double-sidedness (#5).
+
+1. Test a one-handed weapon on the same character — a sword offset from the
+   hand is the clearest check of attachment placement. Note the fingers will
+   stay open (#6).
+2. Repeat across a few races with visibly different builds (Gnome, Human) to
+   confirm per-race placement, with `modelsExportWithBonePrefix` both on and
+   off.
+3. vtube: remove `AttachGear` and `gearScale`/`gearOffset` (it matches meshes
+   by `(L)`/`(R)` in the name, which the fixed export no longer produces, so it
+   is already a no-op), retire `tools/stage-export.py`, update PLAN.md Phase 6.
 4. Fix the OBJ/STL `model_matrix` bug (#2 above) if those formats matter.
 5. Before upstreaming, test one retail race with a plain skeleton and one from
-   the #526 list — see "Classic vs retail".
-6. Consider upstreaming, referencing #521/#526.
+   the #526 list — see "Classic vs retail" — and an alpha-blended retail model
+   to see how the BLEND approximation of modes 3-7 looks.
+6. Consider upstreaming, referencing #521/#526 and #392.
