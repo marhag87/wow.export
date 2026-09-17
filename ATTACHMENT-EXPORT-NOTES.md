@@ -6,7 +6,8 @@ material alpha. Limited to WoW Classic. Target consumer is Unity via glTF.
 
 Updated 2026-09-17: the attachment fix (#1) is verified against a real Classic
 client, the glTF alpha/double-sided bug (#5) is fixed and verified, and the
-project now builds locally (see "Building locally").
+project now builds locally (see "Building locally"). Also fixed: customization
+choices that enable several geosets only applied one (#7).
 
 ## How the viewer places attachments
 
@@ -153,6 +154,36 @@ correctly either way. Search the exported `.gltf` for `"alphaMode"` to see it.
 animations are written from the raw M2 tracks, not sampled from the renderer, so
 exported fingers stay open around a weapon.
 
+### 7. Customization choices apply only one of their geosets — FIXED, VERIFIED
+
+Symptom: a Classic Tauren's beard, nose rings and ears had to be ticked by hand
+in Custom Geoset Control after every refresh, and saved characters lost them.
+Geoset Control edits `chrCustGeosets` directly and is not recorded anywhere, so
+`update_geosets` (run on any appearance change) resets it and the save format
+(`get_current_character_data`) never stores it.
+
+Root cause: `DBCharacterCustomization.js` loaded `ChrCustomizationElement` with
+`choice_to_geoset.set(choiceID, geosetID)`. A choice with several geoset
+elements kept only the last row, so the other geosets were never enabled.
+Element rows can also carry `RelatedChrCustomizationChoiceID`, which was
+ignored for geosets (it was already honoured for materials).
+
+Fixed in commit `5b241122`:
+
+| File | Change |
+| --- | --- |
+| `src/js/db/caches/DBCharacterCustomization.js` | `choice_to_geoset` holds a list of `{ ChrCustomizationGeosetID, RelatedChrCustomizationChoiceID }` per choice. New `get_choice_geosets(choice_id)` returns `{ geoset_id, related_choice_id }[]`. `get_choice_geoset_id` / `get_choice_geoset_raw` return the first entry for compatibility. |
+| `src/js/ui/character-appearance.js` | `apply_customization_geosets` collects every geoset referenced by any choice of an active option into a hide set and the selected choices' geosets (related choice satisfied) into a show set, then applies hide before show. The old per-option loop let a later option's unselected choices hide a geoset an earlier option enabled. |
+
+Shared with `tab_creatures.js`, so NPC customization geosets change too.
+Verified in the viewer: the Tauren's beard, nose rings and ears appear from the
+customization choices alone.
+
+Not done: saving manual Geoset Control overrides. With this fix it was no longer
+needed. If it ever is, record user toggles as `geoset_overrides` (id -> bool),
+reapply them at the end of `update_geosets`, clear them on race/model change,
+and pass them through `chrImport*` state on load (save format version 3).
+
 ## Changes applied (commit 58fe6333, pushed to origin/main)
 
 | File | Change |
@@ -273,8 +304,8 @@ URIs point outside the export folder, e.g. `..\..\..\item\...`).
 
 - `origin` -> `git@github.com:marhag87/wow.export.git` (fork)
 - `upstream` -> `https://github.com/Kruithne/wow.export.git`
-- `58fe6333` (attachment parenting) and `42a67c4a` (material alpha) pushed to
-  `origin/main`.
+- `58fe6333` (attachment parenting), `42a67c4a` (material alpha) and
+  `5b241122` (customization geosets) pushed to `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
@@ -300,7 +331,8 @@ large contributions should start with a tracking issue coordinated in the
 ## Suggested next steps
 
 Done: local build, Classic Tauren pauldron placement (#1), glTF material alpha
-and double-sidedness (#5).
+and double-sidedness (#5), customization geosets (#7), vtube cleanup (done in
+the vtube repo).
 
 1. Test a one-handed weapon on the same character — a sword offset from the
    hand is the clearest check of attachment placement. Note the fingers will
@@ -308,11 +340,9 @@ and double-sidedness (#5).
 2. Repeat across a few races with visibly different builds (Gnome, Human) to
    confirm per-race placement, with `modelsExportWithBonePrefix` both on and
    off.
-3. vtube: remove `AttachGear` and `gearScale`/`gearOffset` (it matches meshes
-   by `(L)`/`(R)` in the name, which the fixed export no longer produces, so it
-   is already a no-op), retire `tools/stage-export.py`, update PLAN.md Phase 6.
-4. Fix the OBJ/STL `model_matrix` bug (#2 above) if those formats matter.
-5. Before upstreaming, test one retail race with a plain skeleton and one from
+3. Fix the OBJ/STL `model_matrix` bug (#2 above) if those formats matter.
+4. Before upstreaming, test one retail race with a plain skeleton and one from
    the #526 list — see "Classic vs retail" — and an alpha-blended retail model
    to see how the BLEND approximation of modes 3-7 looks.
-6. Consider upstreaming, referencing #521/#526 and #392.
+5. Consider upstreaming, referencing #521/#526 and #392. #7 is independent of
+   the export changes and could go up as its own PR.
