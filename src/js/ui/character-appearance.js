@@ -31,29 +31,46 @@ function apply_customization_geosets(geosets, active_choices) {
 		geoset.checked = is_default && !is_hidden_default;
 	}
 
-	// apply customization geosets
+	// apply customization geosets: every geoset referenced by any choice of an
+	// active option is hidden, then the geosets of the selected choices are shown.
+	// hiding everything first stops one option's unselected choices from hiding
+	// a geoset another option's selected choice enables.
+	const hide_ids = new Set();
+	const show_ids = new Set();
+
 	for (const active_choice of active_choices) {
 		const available_choices = DBCharacterCustomization.get_choices_for_option(active_choice.optionID);
 		if (!available_choices)
 			continue;
 
 		for (const available_choice of available_choices) {
-			const chr_cust_geo_id = DBCharacterCustomization.get_choice_geoset_raw(available_choice.id);
-			const geoset_id = DBCharacterCustomization.get_geoset_value(chr_cust_geo_id);
-
-			if (geoset_id === undefined)
+			const choice_geosets = DBCharacterCustomization.get_choice_geosets(available_choice.id);
+			if (!choice_geosets)
 				continue;
 
-			for (const geoset of geosets) {
-				if (geoset.id === 0)
+			const is_selected = available_choice.id === active_choice.choiceID;
+			for (const { geoset_id, related_choice_id } of choice_geosets) {
+				hide_ids.add(geoset_id);
+
+				if (!is_selected)
 					continue;
 
-				if (geoset.id === geoset_id) {
-					const should_be_checked = available_choice.id === active_choice.choiceID;
-					geoset.checked = should_be_checked;
-				}
+				if (related_choice_id !== 0 && !active_choices.some(c => c.choiceID === related_choice_id))
+					continue;
+
+				show_ids.add(geoset_id);
 			}
 		}
+	}
+
+	for (const geoset of geosets) {
+		if (geoset.id === 0)
+			continue;
+
+		if (show_ids.has(geoset.id))
+			geoset.checked = true;
+		else if (hide_ids.has(geoset.id))
+			geoset.checked = false;
 	}
 }
 
