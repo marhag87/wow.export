@@ -437,6 +437,7 @@ async function update_textures(core) {
 	const item_skins = core.view.chrEquippedItemSkins;
 	if (equipped_items && Object.keys(equipped_items).length > 0) {
 		const char_info = get_current_race_gender(core);
+		const bare_feet = DBCharacterCustomization.is_race_bare_feet(char_info?.raceID);
 		const sections = DBCharacterCustomization.get_texture_sections(current_char_component_texture_layout_id);
 		if (sections) {
 			const section_by_type = new Map();
@@ -490,6 +491,10 @@ async function update_textures(core) {
 					continue;
 
 				for (const texture of item_textures) {
+					// races flagged bare-feet (e.g. tauren) never get boot textures on the foot section
+					if (bare_feet && texture.section === DBItemCharTextures.COMPONENT_SECTION.FOOT)
+						continue;
+
 					const section = section_by_type.get(texture.section);
 					if (!section)
 						continue;

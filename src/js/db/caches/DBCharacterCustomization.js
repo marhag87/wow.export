@@ -195,7 +195,13 @@ const _initialize = async () => {
 	// races
 	for (const [chr_race_id, chr_race_row] of await db2.ChrRaces.getAllRows()) {
 		const flags = chr_race_row.Flags;
-		chr_race_map.set(chr_race_id, { id: chr_race_id, name: chr_race_row.Name_lang, isNPCRace: ((flags & 1) == 1 && chr_race_id != 23 && chr_race_id != 75) });
+		chr_race_map.set(chr_race_id, {
+			id: chr_race_id,
+			name: chr_race_row.Name_lang,
+			isNPCRace: ((flags & 1) == 1 && chr_race_id != 23 && chr_race_id != 75),
+			// ChrRaces flag 0x2 (DoNotComponentFeet): item textures are not drawn on the feet, e.g. tauren hooves
+			bareFeet: (flags & 0x2) === 0x2
+		});
 	}
 
 	// race -> model mapping
@@ -256,6 +262,7 @@ const get_chr_model_id = (race_id, sex) => {
 
 const get_race_models = (race_id) => chr_race_x_chr_model_map.get(race_id);
 const get_chr_race_map = () => chr_race_map;
+const is_race_bare_feet = (race_id) => chr_race_map.get(race_id)?.bareFeet === true;
 const get_chr_race_x_chr_model_map = () => chr_race_x_chr_model_map;
 
 const get_choice_geoset_id = (choice_id) => {
@@ -331,6 +338,7 @@ module.exports = {
 	get_chr_model_id,
 	get_race_models,
 	get_chr_race_map,
+	is_race_bare_feet,
 	get_chr_race_x_chr_model_map,
 
 	get_choice_geoset_id,

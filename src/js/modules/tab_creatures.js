@@ -259,6 +259,8 @@ const apply_creature_equipment_textures = async (core) => {
 		}
 	}
 
+	const bare_feet = DBCharacterCustomization.is_race_bare_feet(creature_extra_info?.DisplayRaceID);
+
 	for (const [slot_id, entry] of enabled) {
 		// use display-ID-based lookup for armor, item-ID-based for weapons
 		const item_textures = entry.item_id
@@ -269,6 +271,10 @@ const apply_creature_equipment_textures = async (core) => {
 			continue;
 
 		for (const texture of item_textures) {
+			// races flagged bare-feet (e.g. tauren) never get boot textures on the foot section
+			if (bare_feet && texture.section === DBItemCharTextures.COMPONENT_SECTION.FOOT)
+				continue;
+
 			const section = section_by_type.get(texture.section);
 			if (!section)
 				continue;
