@@ -111,6 +111,10 @@ const skinned_model_renderers = new Map();
 
 const chr_materials = new Map();
 
+// M2 replaceable texture type for the cloak geoset, and the texture bound to it
+const CAPE_TEXTURE_TYPE = 2;
+let cape_texture_file_data_id;
+
 // equipment model renderers (slot_id -> { renderers: [{renderer, attachment_id}], item_id })
 const equipment_model_renderers = new Map();
 
@@ -593,6 +597,13 @@ async function update_textures(core) {
 
 	// step 5: upload all textures to GPU
 	await character_appearance.upload_textures_to_gpu(active_renderer, chr_materials);
+
+	// step 6: cloak texture. cloaks have no model of their own; the character's
+	// cloak geoset uses the cape replaceable texture, supplied by the item
+	const cloak_item_id = equipped_items?.[15];
+	cape_texture_file_data_id = cloak_item_id ? DBItemModels.getItemModelTexture(cloak_item_id, item_skins?.[15]) : undefined;
+	if (cape_texture_file_data_id)
+		await active_renderer.overrideTextureType(CAPE_TEXTURE_TYPE, cape_texture_file_data_id);
 }
 
 /**
@@ -2046,7 +2057,8 @@ const export_char_model = async (core) => {
 
 			const casc = core.view.casc;
 			const data = await casc.getFile(file_data_id);
-			const exporter = new M2Exporter(data, [], file_data_id);
+			// variant textures are indexed by replaceable texture type - 2, so the cape goes first
+			const exporter = new M2Exporter(data, [cape_texture_file_data_id], file_data_id);
 
 			for (const [chr_model_texture_target, chr_material] of chr_materials)
 				exporter.addURITexture(chr_model_texture_target, chr_material.getURI());
@@ -2110,7 +2122,8 @@ const export_char_model = async (core) => {
 			const data = await casc.getFile(file_data_id);
 			const mark_file_name = get_character_export_file(core, file_name, '.gltf');
 			const export_path = ExportHelper.getExportPath(mark_file_name);
-			const exporter = new M2Exporter(data, [], file_data_id);
+			// variant textures are indexed by replaceable texture type - 2, so the cape goes first
+			const exporter = new M2Exporter(data, [cape_texture_file_data_id], file_data_id);
 			exporter.setGLTFFaceForward(core.view.config.chrExportFaceForward);
 
 			for (const [chr_model_texture_target, chr_material] of chr_materials)

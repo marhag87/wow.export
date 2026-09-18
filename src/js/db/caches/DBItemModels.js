@@ -9,12 +9,17 @@ const db2 = require('../../casc/db2');
 const DBModelFileData = require('./DBModelFileData');
 const DBItemDisplayInfoModelMatRes = require('./DBItemDisplayInfoModelMatRes');
 const DBComponentModelFileData = require('./DBComponentModelFileData');
+const DBTextureFileData = require('./DBTextureFileData');
 
 // maps ItemID -> Map<ItemAppearanceModifierID, ItemDisplayInfoID>
 const item_to_display_ids = new Map();
 
 // maps ItemDisplayInfoID -> { modelOptions: [[fdid, ...], ...], textures: [fdid, ...], geosetGroup: [...], attachmentGeosetGroup: [...] }
 const display_to_data = new Map();
+
+// maps ItemDisplayInfoID -> ModelMaterialResourcesID[], kept for every display,
+// including model-less ones such as cloaks (a character geoset textured from these)
+const display_to_model_material_res = new Map();
 
 let is_initialized = false;
 let init_promise = null;
@@ -61,6 +66,9 @@ const initialize = async () => {
 
 		// load model and texture file data IDs from ItemDisplayInfo
 		for (const [display_id, row] of await db2.ItemDisplayInfo.getAllRows()) {
+			if (row.ModelMaterialResourcesID?.some(e => e > 0))
+				display_to_model_material_res.set(display_id, row.ModelMaterialResourcesID);
+
 			const model_res_ids = row.ModelResourcesID.filter(e => e > 0);
 			if (model_res_ids.length === 0)
 				continue;
@@ -225,6 +233,30 @@ const get_item_display = (item_id, race_id, gender_index, modifier_id, shoulder_
 };
 
 /**
+ * Get the texture an item applies to a character model replaceable texture,
+ * e.g. a cloak's cape texture. Works for items without a model of their own.
+ * @param {number} item_id
+ * @param {number} [modifier_id]
+ * @param {number} [index=0] - ModelMaterialResourcesID index
+ * @returns {number|undefined} texture fileDataID
+ */
+const get_item_model_texture = (item_id, modifier_id, index = 0) => {
+	const display_id = resolve_display_id(item_id, modifier_id);
+	if (display_id === undefined)
+		return undefined;
+
+	const mat_res_id = display_to_model_material_res.get(display_id)?.[index];
+	if (mat_res_id > 0) {
+		const file_data_ids = DBTextureFileData.getTextureFDIDsByMatID(mat_res_id);
+		if (file_data_ids?.length > 0)
+			return file_data_ids[0];
+	}
+
+	// modern displays keep their textures in ItemDisplayInfoModelMatRes instead
+	return DBItemDisplayInfoModelMatRes.getItemDisplayIdTextureFileIds(display_id)?.[index];
+};
+
+/**
  * Get ItemDisplayInfoID for an item.
  * @param {number} item_id
  * @param {number} [modifier_id]
@@ -305,6 +337,7 @@ module.exports = {
 	ensureInitialized: ensure_initialized,
 	getItemModels: get_item_models,
 	getItemDisplay: get_item_display,
+	getItemModelTexture: get_item_model_texture,
 	getDisplayId: get_display_id,
 	getDisplayData: get_display_data,
 	getItemModifiers: get_item_modifiers
