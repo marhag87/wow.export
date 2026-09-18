@@ -9,8 +9,9 @@ client, the glTF alpha/double-sided bug (#5) is fixed and verified, and the
 project now builds locally (see "Building locally"). Also fixed: customization
 choices that enable several geosets only applied one (#7), and attachment
 bones lost their scale in most glTF animations (#8). Added: an option to export
-characters into a folder named after the character, and saving updates the open
-saved character in place (see "Features added").
+characters into a folder named after the character, saving updates the open
+saved character in place, and glTF character exports can face +Z (see
+"Features added").
 
 ## How the viewer places attachments
 
@@ -297,6 +298,34 @@ per-character export folder name stored in the save file.
 
 Verified in the app.
 
+### Face forward (+Z) for glTF character exports (commit 63d03eef)
+
+The M2 loader converts WoW coordinates to glTF as `(x, y, z) -> (x, z, -y)`
+(`M2Loader.js` vertex read) without rotating, so models face +X. glTF's
+convention is +Z forward, so exports looked sideways in Blender's front view and
+vtube needed a `FacingCorrectionY = -90` fix in `AvatarSetup`.
+
+New **Face forward (+Z)** checkbox in the character export panel (config
+`chrExportFaceForward`, default off, shown for glTF/GLB only):
+
+- `GLTFWriter.setRootRotation(quat)` sets `rotation` on the root node (node 0).
+  Every other node is its descendant — the `<model>_skeleton` node, all mesh
+  nodes (`add_scene_node` pushes to node 0) and attachment meshes under joints
+  — so the whole character turns, while vertex, bone and animation data are
+  unchanged. Animation channels target joints below the root, so they are
+  unaffected. Unset, output is identical to before.
+- `M2Exporter.setGLTFFaceForward(bool)` requests
+  `[0, -SQRT1_2, 0, SQRT1_2]` (-90 degrees about Y), which maps +X onto +Z.
+  Checked in the Node harness (+X -> (0, 0, 1)).
+- Only the character tab uses it. A global change was rejected: it would
+  change every glTF export for everyone, and the Blender add-on, existing
+  scenes and map placement (world-positioned M2s) depend on the current axes.
+  OBJ/STL have no root node and are not covered.
+
+Verified: Blender front view (numpad 1) shows the character from the front.
+vtube needed additional changes of its own to handle the rotated root
+(done in the vtube repo).
+
 ## Changes applied (commit 58fe6333, pushed to origin/main)
 
 | File | Change |
@@ -425,7 +454,8 @@ Export settings that give vtube a clean export: glTF format,
 `modelsExportAnimations` on, `enableSharedTextures` **off** (otherwise texture
 URIs point outside the export folder, e.g. `..\..\..\item\...`), and
 optionally **Export to character folder** so each character gets its own folder
-in the vtube avatars directory.
+in the vtube avatars directory, and **Face forward (+Z)** (vtube now expects
+it).
 
 ## Repo / CI state
 
@@ -433,8 +463,8 @@ in the vtube avatars directory.
 - `upstream` -> `https://github.com/Kruithne/wow.export.git`
 - `58fe6333` (attachment parenting), `42a67c4a` (material alpha),
   `5b241122` (customization geosets), `e3294fbe` (attachment bone scale),
-  `1a452efe` (export to character folder) and `2c00e8c2` (save updates the open
-  character) pushed to `origin/main`.
+  `1a452efe` (export to character folder), `2c00e8c2` (save updates the open
+  character) and `63d03eef` (face forward +Z) pushed to `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
@@ -462,7 +492,7 @@ large contributions should start with a tracking issue coordinated in the
 Done: local build, Classic Tauren pauldron placement (#1), glTF material alpha
 and double-sidedness (#5), customization geosets (#7), attachment bone scale in
 animations (#8), export to character folder, save updates the open character,
-vtube cleanup (done in the vtube repo).
+face forward (+Z), vtube cleanup (done in the vtube repo).
 
 1. Test a one-handed weapon on the same character — a sword offset from the
    hand is the clearest check of attachment placement. Note the fingers will
