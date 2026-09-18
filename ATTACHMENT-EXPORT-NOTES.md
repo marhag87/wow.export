@@ -8,7 +8,8 @@ Updated 2026-09-17: the attachment fix (#1) is verified against a real Classic
 client, the glTF alpha/double-sided bug (#5) is fixed and verified, and the
 project now builds locally (see "Building locally"). Also fixed: customization
 choices that enable several geosets only applied one (#7), and attachment
-bones lost their scale in most glTF animations (#8). Added: an option to export
+bones lost their scale in most glTF animations (#8), and boot textures covered
+Tauren hooves (#9). Added: an option to export
 characters into a folder named after the character, saving updates the open
 saved character in place, and glTF character exports can face +Z (see
 "Features added").
@@ -231,6 +232,30 @@ and `generics` via `Module._load` and defining `global.nw.App.manifest`, then
 feeding it synthetic bones and animations. That is how the single-entry track
 case was reproduced without a client. Make synthetic tracks match what the
 loader really produces.
+
+### 9. Boot textures drawn over bare-feet races' feet — FIXED, VERIFIED
+
+Symptom: with boots equipped, a Tauren's hooves were fully covered by the boot
+texture; in game the hooves stay visible and only the leg part of the boot is
+drawn.
+
+`ChrRaces.Flags & 0x2` is "Bare Feet" (named `DoNotComponentFeet` in 10.1.7,
+per wowdev.wiki DB/ChrRaces): the client does not composite item textures onto
+the FOOT component section (`CharComponentTextureSections` type 7) for those
+races. wow.export ignored the flag and drew every section of every item.
+
+Fixed in commit `a8f1f03c`:
+
+| File | Change |
+| --- | --- |
+| `src/js/db/caches/DBCharacterCustomization.js` | Race map entries carry `bareFeet`; new `is_race_bare_feet(race_id)`. |
+| `src/js/modules/tab_characters.js` | `update_textures` skips item textures with `section === COMPONENT_SECTION.FOOT` for bare-feet races. |
+| `src/js/modules/tab_creatures.js` | Same skip for NPC equipment, using `DisplayRaceID`. |
+
+Texture-only: the exported `data-*.png` skin textures come from the same
+compositing, so exports pick it up. If a boot *geoset* ever replaces hoof
+geometry, that is a separate geoset-side issue (not seen so far). Verified in
+the viewer on the Tauren.
 
 ## Features added
 
@@ -464,7 +489,8 @@ it).
 - `58fe6333` (attachment parenting), `42a67c4a` (material alpha),
   `5b241122` (customization geosets), `e3294fbe` (attachment bone scale),
   `1a452efe` (export to character folder), `2c00e8c2` (save updates the open
-  character) and `63d03eef` (face forward +Z) pushed to `origin/main`.
+  character), `63d03eef` (face forward +Z) and `a8f1f03c` (bare feet) pushed to
+  `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
@@ -492,7 +518,8 @@ large contributions should start with a tracking issue coordinated in the
 Done: local build, Classic Tauren pauldron placement (#1), glTF material alpha
 and double-sidedness (#5), customization geosets (#7), attachment bone scale in
 animations (#8), export to character folder, save updates the open character,
-face forward (+Z), vtube cleanup (done in the vtube repo).
+face forward (+Z), bare-feet boot textures (#9), vtube cleanup (done in the
+vtube repo).
 
 1. Test a one-handed weapon on the same character — a sword offset from the
    hand is the clearest check of attachment placement. Note the fingers will
