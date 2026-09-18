@@ -128,6 +128,18 @@ class GLTFWriter {
 
 		// equipment models to append
 		this.equipment_models = [];
+
+		// optional rotation quaternion [x, y, z, w] applied to the root node
+		this.root_rotation = null;
+	}
+
+	/**
+	 * Rotate the whole model by setting a rotation on the root node. Vertex,
+	 * bone and animation data are unchanged, since everything is parented to it.
+	 * @param {Array} quat - [x, y, z, w]
+	 */
+	setRootRotation(quat) {
+		this.root_rotation = quat;
 	}
 
 	/**
@@ -254,7 +266,8 @@ class GLTFWriter {
 			nodes: [
 				{
 					name: this.name,
-					children: []
+					children: [],
+					...(this.root_rotation ? { rotation: this.root_rotation } : {})
 				}
 			],
 			scenes: [

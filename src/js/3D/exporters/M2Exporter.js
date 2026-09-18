@@ -44,6 +44,15 @@ class M2Exporter {
 	}
 
 	/**
+	 * Turn glTF exports to face +Z (the glTF forward convention) instead of
+	 * WoW's +X, via a rotation on the root node.
+	 * @param {boolean} face_forward
+	 */
+	setGLTFFaceForward(face_forward) {
+		this.gltfFaceForward = face_forward;
+	}
+
+	/**
 	 * Set posed geometry to use instead of bind pose
 	 * @param {Float32Array} vertices
 	 * @param {Float32Array} normals
@@ -265,6 +274,10 @@ class M2Exporter {
 		const model_name = path.basename(outGLTF, ext);
 		const gltf = new GLTFWriter(out, model_name);
 		log.write('Exporting M2 model %s as %s: %s', model_name, format.toUpperCase(), outGLTF);
+
+		// -90 degrees about Y maps WoW's forward (+X) onto glTF's forward (+Z)
+		if (this.gltfFaceForward)
+			gltf.setRootRotation([0, -Math.SQRT1_2, 0, Math.SQRT1_2]);
 
 		if (this.m2.skeletonFileID) {
 			const skel_file = await core.view.casc.getFile(this.m2.skeletonFileID);

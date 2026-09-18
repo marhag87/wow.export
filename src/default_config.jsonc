@@ -87,6 +87,7 @@
 	"chrBackgroundColor": "#000000",
 	"chrExportApplyPose": true,
 	"chrExportToNamedFolder": false,
+	"chrExportFaceForward": false,
 	"modelsExportApplyPose": true,
 	"modelsExportWithBonePrefix": true,
 	"soundPlayerVolume": 0.7,

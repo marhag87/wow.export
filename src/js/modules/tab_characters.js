@@ -2106,6 +2106,7 @@ const export_char_model = async (core) => {
 			const mark_file_name = get_character_export_file(core, file_name, '.gltf');
 			const export_path = ExportHelper.getExportPath(mark_file_name);
 			const exporter = new M2Exporter(data, [], file_data_id);
+			exporter.setGLTFFaceForward(core.view.config.chrExportFaceForward);
 
 			for (const [chr_model_texture_target, chr_material] of chr_materials)
 				exporter.addURITexture(chr_model_texture_target, chr_material.getURI());
@@ -2458,6 +2459,10 @@ module.exports = {
 							<label class="ui-checkbox" v-show="$core.view.config.exportCharacterFormat === 'GLTF' || $core.view.config.exportCharacterFormat === 'GLB'" title="Include Animations in Export">
 								<input type="checkbox" v-model="$core.view.config.modelsExportAnimations"/>
 								<span>Export animations</span>
+							</label>
+							<label class="ui-checkbox" v-show="$core.view.config.exportCharacterFormat === 'GLTF' || $core.view.config.exportCharacterFormat === 'GLB'" title="Rotate the character to face +Z, the glTF forward direction, instead of WoW's +X">
+								<input type="checkbox" v-model="$core.view.config.chrExportFaceForward"/>
+								<span>Face forward (+Z)</span>
 							</label>
 							<label class="ui-checkbox" v-show="$core.view.config.exportCharacterFormat === 'OBJ' || $core.view.config.exportCharacterFormat === 'STL'" title="Apply current animation pose to exported geometry">
 								<input type="checkbox" v-model="$core.view.config.chrExportApplyPose"/>
