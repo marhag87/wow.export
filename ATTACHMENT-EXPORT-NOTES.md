@@ -244,7 +244,7 @@ per wowdev.wiki DB/ChrRaces): the client does not composite item textures onto
 the FOOT component section (`CharComponentTextureSections` type 7) for those
 races. wow.export ignored the flag and drew every section of every item.
 
-Fixed in commit `a8f1f03c`:
+Fixed in commit `0913d9d2`:
 
 | File | Change |
 | --- | --- |
@@ -489,7 +489,7 @@ it).
 - `58fe6333` (attachment parenting), `42a67c4a` (material alpha),
   `5b241122` (customization geosets), `e3294fbe` (attachment bone scale),
   `1a452efe` (export to character folder), `2c00e8c2` (save updates the open
-  character), `63d03eef` (face forward +Z) and `a8f1f03c` (bare feet) pushed to
+  character), `63d03eef` (face forward +Z) and `0913d9d2` (bare feet) pushed to
   `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
