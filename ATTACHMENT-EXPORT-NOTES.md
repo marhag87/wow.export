@@ -8,8 +8,8 @@ Updated 2026-09-17: the attachment fix (#1) is verified against a real Classic
 client, the glTF alpha/double-sided bug (#5) is fixed and verified, and the
 project now builds locally (see "Building locally"). Also fixed: customization
 choices that enable several geosets only applied one (#7), and attachment
-bones lost their scale in most glTF animations (#8), and boot textures covered
-Tauren hooves (#9). Added: an option to export
+bones lost their scale in most glTF animations (#8), boot textures covered
+Tauren hooves (#9), and cloaks rendered untextured (#10). Added: an option to export
 characters into a folder named after the character, saving updates the open
 saved character in place, and glTF character exports can face +Z (see
 "Features added").
@@ -257,6 +257,33 @@ compositing, so exports pick it up. If a boot *geoset* ever replaces hoof
 geometry, that is a separate geoset-side issue (not seen so far). Verified in
 the viewer on the Tauren.
 
+### 10. Cloaks untextured — FIXED, VERIFIED
+
+Symptom: an equipped cloak showed the viewer's light-blue missing-texture
+placeholder, in the preview and in exports.
+
+Classic cloaks have no model of their own. The cloak is a character geoset
+(group 15xx) textured through M2 replaceable texture type 2 (cape), and the
+texture comes from the item's `ItemDisplayInfo.ModelMaterialResourcesID[0]`.
+Three gaps:
+
+1. `DBItemModels` skipped every display with no `ModelResourcesID`, so a
+   cloak's material resources were never recorded.
+2. Nothing in the character tab bound replaceable type 2 on the character
+   model.
+3. The character export built `M2Exporter(data, [], id)`, so type 2 had no
+   variant texture (`variantTextures[textureType - 2]`) and no material.
+
+Fixed in commit `e849d4f9`:
+
+| File | Change |
+| --- | --- |
+| `src/js/db/caches/DBItemModels.js` | Keeps `ModelMaterialResourcesID` for every display (`display_to_model_material_res`), including model-less ones. New `getItemModelTexture(item_id, modifier_id, index = 0)` resolves through `DBTextureFileData.getTextureFDIDsByMatID`, falling back to `ItemDisplayInfoModelMatRes` (modern data). |
+| `src/js/modules/tab_characters.js` | `update_textures` step 6: looks up slot 15's cape texture and calls `active_renderer.overrideTextureType(2, fdid)`; kept in `cape_texture_file_data_id` and passed as `variantTextures[0]` to `M2Exporter` for glTF/GLB and OBJ/STL. |
+
+Verified in the viewer on the Troll with Flimsy Chain Cloak. Not covered: the
+creatures tab, where NPC cloaks may still show the placeholder.
+
 ## Features added
 
 ### Export characters to a named folder (commit 1a452efe)
@@ -489,7 +516,8 @@ it).
 - `58fe6333` (attachment parenting), `42a67c4a` (material alpha),
   `5b241122` (customization geosets), `e3294fbe` (attachment bone scale),
   `1a452efe` (export to character folder), `2c00e8c2` (save updates the open
-  character), `63d03eef` (face forward +Z) and `0913d9d2` (bare feet) pushed to
+  character), `63d03eef` (face forward +Z), `0913d9d2` (bare feet) and `e849d4f9` (cloak
+  textures) pushed to
   `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
@@ -518,8 +546,8 @@ large contributions should start with a tracking issue coordinated in the
 Done: local build, Classic Tauren pauldron placement (#1), glTF material alpha
 and double-sidedness (#5), customization geosets (#7), attachment bone scale in
 animations (#8), export to character folder, save updates the open character,
-face forward (+Z), bare-feet boot textures (#9), vtube cleanup (done in the
-vtube repo).
+face forward (+Z), bare-feet boot textures (#9), cloak textures (#10), vtube
+cleanup (done in the vtube repo).
 
 1. Test a one-handed weapon on the same character — a sword offset from the
    hand is the clearest check of attachment placement. Note the fingers will
