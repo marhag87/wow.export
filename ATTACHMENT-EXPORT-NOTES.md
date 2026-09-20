@@ -13,7 +13,9 @@ Tauren hooves (#9), and cloaks rendered untextured (#10). Added live sync, which
 reads equipped gear off the running game and re-exports (see "Features added"). Added: an option to export
 characters into a folder named after the character, saving updates the open
 saved character in place, and glTF character exports can face +Z (see
-"Features added").
+"Features added"). Also fixed the Characters tab taking ~25s to open, which was
+a quadratic DB2 row lookup rather than any download (see "Startup
+performance").
 
 ## How the viewer places attachments
 
@@ -445,6 +447,39 @@ capacity if that changes.
 
 Verified end to end: gear change in game -> export -> vtube reloads.
 
+## Startup performance: DB2 row lookups (commit 56571141)
+
+Opening the Characters tab took ~25s on a warm cache. Nothing was being
+downloaded; the runtime log showed 22 of those seconds in a single gap with no
+output, between `ChrCustomizationMaterial` being parsed and the next table
+loading.
+
+The cost was in `WDCReader._findSectionForRecord`, which walked a section
+linearly on every lookup by ID:
+
+- with an ID list, `section.idList.indexOf(recordID)`;
+- **with no ID list, parsing records from the start of the section until the
+  inline ID field matched**;
+- plus `idList.every(id => id === 0)` to test for a zeroed ID map, re-run on
+  every record read.
+
+`DBCharacterCustomization` calls `db2.ChrCustomizationMaterial.getRow()` once per
+`ChrCustomizationElement` row. `ChrCustomizationMaterial` has no ID list, so
+6134 lookups each parsed an average of ~3600 of its 7186 records: roughly 22
+million record parses.
+
+The fix builds the id -> record index map once per section (`_getIDIndex` for ID
+lists, `_getInlineIDIndex` for inline IDs) and caches the zeroed-ID-map result on
+the section. Measured after: the gap is under a second and the tab loads in 3s.
+Because it sits in `WDCReader`, every lookup by ID in the app benefits;
+`ChrCustomizationMaterial` was just the one large enough to notice.
+
+Note the first loading screen (installation -> home) is unrelated and unchanged:
+listfile mapping, CDN pings and CASC index loading, ~2s each, no single hotspot.
+The binary listfile itself is re-downloaded whenever `listfileCacheRefresh`
+(default 3 days) expires, which is a genuine download and is configurable in
+settings.
+
 ## Changes applied (commit 58fe6333, pushed to origin/main)
 
 | File | Change |
@@ -584,8 +619,8 @@ it).
   `5b241122` (customization geosets), `e3294fbe` (attachment bone scale),
   `1a452efe` (export to character folder), `2c00e8c2` (save updates the open
   character), `63d03eef` (face forward +Z), `0913d9d2` (bare feet),
-  `e849d4f9` (cloak textures) and `8e43c888` (live sync) pushed to
-  `origin/main`.
+  `e849d4f9` (cloak textures), `8e43c888` (live sync) and `56571141` (indexed
+  DB2 row lookups) pushed to `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
@@ -614,7 +649,8 @@ Done: local build, Classic Tauren pauldron placement (#1), glTF material alpha
 and double-sidedness (#5), customization geosets (#7), attachment bone scale in
 animations (#8), export to character folder, save updates the open character,
 face forward (+Z), bare-feet boot textures (#9), cloak textures (#10), live sync
-from the running game, vtube cleanup (done in the vtube repo).
+from the running game, Characters tab load time, vtube cleanup (done in the
+vtube repo).
 
 1. Test a one-handed weapon on the same character — a sword offset from the
    hand is the clearest check of attachment placement. Note the fingers will
