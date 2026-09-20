@@ -523,6 +523,24 @@ acceptable here because the setup is a single known machine.
 Verified in game: `found the strip at 0,0 (pitch 1.000)`, gear change applied and
 exported.
 
+### Per-slot filter (commit 18f70350)
+
+Live sync dressed the model in everything the game reported. `chrLiveSyncSlots`
+now lists the game slots it may drive; an unticked slot is never written, so it
+stays empty on the model, and ticking it again brings the game's item back. The
+alternative considered was leaving an unticked slot under manual control, which
+would allow pinning a chosen item in a slot the game does not drive, but it has
+no visible effect until the slot is also cleared by hand.
+
+Changing the filter calls `LiveSync.resync()`, which clears the "already applied
+this change counter" guard, so the filter takes effect on the next poll instead
+of waiting for the next gear change in game.
+
+The checkboxes sit in the customization column, above the Randomize
+Customization links, not in the export panel: 13 of them there made the panel
+tall enough to cover the equipment slots and Clear All Equipment behind it, and
+collapsing the list behind a summary line still cost two lines of height.
+
 ## Startup performance: DB2 row lookups (commit 56571141)
 
 Opening the Characters tab took ~25s on a warm cache. Nothing was being
@@ -696,8 +714,9 @@ it).
   `1a452efe` (export to character folder), `2c00e8c2` (save updates the open
   character), `63d03eef` (face forward +Z), `0913d9d2` (bare feet),
   `e849d4f9` (cloak textures), `8e43c888` (live sync), `56571141` (indexed
-  DB2 row lookups), `27282234` (smaller live sync strip) and `78c1eb36` (one
-  pixel per block) pushed to `origin/main`.
+  DB2 row lookups), `27282234` (smaller live sync strip), `78c1eb36` (one pixel
+  per block), `665f44a0` (bun lockfile refresh) and `18f70350` (live sync slot
+  filter) pushed to `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
