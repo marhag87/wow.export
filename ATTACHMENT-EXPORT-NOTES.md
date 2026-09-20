@@ -400,8 +400,8 @@ encoding the equipped item IDs, and wow.export reads it off the screen.
 
 | Part | What it is |
 | --- | --- |
-| `addons/live-sync/WoWExportLiveSync/` | The addon. 5 marker blocks (black, white, red, green, blue), 48 data blocks (6 bits each, 2 bits per channel, levels 0/85/170/255), 2 end markers (white, black). Payload: 4-bit format version, 8-bit change counter, 13 slots x 20-bit item ID, CRC-16/CCITT-FALSE. Redraws on `PLAYER_EQUIPMENT_CHANGED`; `/wxls` prints what it is encoding. |
-| `addons/live-sync/decode-strip.js` | Standalone decoder for a PNG screenshot, used to prove the channel before wiring anything up. Includes a minimal PNG reader. |
+| `addons/live-sync/WoWExportLiveSync/` | The addon. 5 marker blocks (black, white, red, green, blue), 44 data blocks (6 bits each, 2 bits per channel, levels 0/85/170/255), 2 end markers (white, black). Payload: 4-bit format version, 8-bit change counter, 13 slots x 18-bit item ID, CRC-16/CCITT-FALSE. Redraws on `PLAYER_EQUIPMENT_CHANGED`; `/wxls` prints what it is encoding. Format version 2; see "Shrinking the strip". |
+| `addons/live-sync/decode-strip.js` | Reads a PNG screenshot and hands the pixels to `strip-decoder.js`, so the tool cannot drift from the app. Includes a minimal PNG reader. |
 | `src/js/ui/strip-decoder.js` | The same decode against a captured frame. |
 | `node_addons/screencap/` | Windows-only GDI screen grab (`capture(x, y, w, h)` -> RGBA, `virtualScreen()`). |
 | `src/js/screencap.js` | Loads it like `mmap.js`; reports unavailable rather than throwing. |
@@ -431,11 +431,12 @@ headers pass and `node-addon-api` 8.x uses `std::string_view`.
    strip. It now anchors on the red marker (rare on screen) and confirms green
    and blue after it.
 
-Windows also hands the app scaled coordinates: a 4K panel at 125% is captured as
-3072x1728, so the strip arrives at 18 pixels per block. Verified decoding at
+Windows also handed the app scaled coordinates: a 4K panel at 125% was captured
+as 3072x1728, so the strip arrived at 18 pixels per block. Verified decoding at
 full size and at 0.8, 0.6 and 0.5 scale, and that a capture without a strip
 decodes to nothing. Decode costs ~0.1ms per frame once the strip is located; the
-default interval is 1s (`chrLiveSyncIntervalMs`).
+default interval is 1s (`chrLiveSyncIntervalMs`). The scaling is gone as of
+commit 27282234 - see "Shrinking the strip" below.
 
 **Behaviour decisions:** the toggle is view state, not config, so live sync is
 always off at launch. It switches itself off whenever the loaded model changes,
@@ -446,6 +447,52 @@ IDs only - appearance variants are rare in Classic, and the strip has spare
 capacity if that changes.
 
 Verified end to end: gear change in game -> export -> vtube reloads.
+
+### Shrinking the strip (commit 27282234)
+
+The strip started out about 1240x22 pixels, which is intrusive. It is now 255x5.
+Three separate things made it large.
+
+**The capture was needlessly lossy.** The app is only system-DPI-aware, so
+Windows virtualises GDI for it: on a 4K display at 125% both `GetSystemMetrics`
+and `BitBlt` return the scaled 3072x1728 desktop, and the captured image is a
+resampled copy. That is what made the fractional pitch above a problem at all,
+and it forced blocks big enough to survive resampling. `capture()` and
+`virtualScreen()` now call `SetThreadDpiAwarenessContext` with
+`PER_MONITOR_AWARE_V2` for the duration of the call, resolved through
+`GetProcAddress` so the addon still builds and runs without it, and restored by
+a destructor on the way out. Frames are now true pixels: the log reads
+`searching 8320x2160 ... (dpi aware: true)` where it used to say 1728, and the
+measured pitch is exactly the block size.
+
+**The block size was never in pixels.** The addon called
+`SetIgnoreParentScale(true)` and claimed to be drawing in physical pixels, but
+that only drops the *parent's* scale - a unit is still `screen_height/768`
+pixels, so on 4K an 8 unit block was 22.5 pixels. The frame is now scaled by
+`768/physical_height` (from `GetPhysicalScreenSize`), so sizes mean what they
+say, and it re-derives on `UI_SCALE_CHANGED` and `DISPLAY_SIZE_CHANGED`.
+
+**The payload had slack.** Item IDs are 18 bits, not 20: 262143 covers every
+live ID with room over retail's ~240k. 48 data blocks became 44.
+
+Two bugs surfaced while verifying this with a simulation harness that renders the
+strip, area-averages it down and runs the real decoder:
+
+1. *CRC padding.* The addon pads the payload with zeroes to whole bytes; the
+   decoder padded with whatever bits followed, which are the CRC itself. Harmless
+   while the payload was 272 bits (34 bytes exactly), fatal at 246.
+2. *The end marker search could miss.* The pitch estimate comes from two marker
+   centres two blocks apart, so its error compounds over the 49 blocks to the end
+   marker - further than the search window reached. `find_strips` is now a
+   generator yielding every candidate position and `decode_frame` keeps the first
+   whose CRC passes. This also made behaviour monotonic in block size: before it,
+   7 pixel blocks failed at 0.6667 scale but worked at 0.5.
+
+Measured floor is about 3.5 pixels per block. 5 was chosen so the strip still
+reads if a capture is scaled to 0.8, i.e. if the DPI-aware path is ever
+unavailable; at full resolution 3 works and smaller needs decoder changes, since
+the run-length minimums and `Math.round` centre sampling assume a blurred
+capture.
 
 ## Startup performance: DB2 row lookups (commit 56571141)
 
@@ -619,8 +666,9 @@ it).
   `5b241122` (customization geosets), `e3294fbe` (attachment bone scale),
   `1a452efe` (export to character folder), `2c00e8c2` (save updates the open
   character), `63d03eef` (face forward +Z), `0913d9d2` (bare feet),
-  `e849d4f9` (cloak textures), `8e43c888` (live sync) and `56571141` (indexed
-  DB2 row lookups) pushed to `origin/main`.
+  `e849d4f9` (cloak textures), `8e43c888` (live sync), `56571141` (indexed
+  DB2 row lookups) and `27282234` (smaller live sync strip) pushed to
+  `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
