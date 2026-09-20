@@ -7,7 +7,7 @@
 
 	  5 marker blocks : black, white, red, green, blue
 	                    (locate the strip, and calibrate black/white levels)
-	  48 data blocks  : 6 bits each, 2 bits per channel, most significant first
+	  44 data blocks  : 6 bits each, 2 bits per channel, most significant first
 	                    channel level = value * 85 (0, 85, 170, 255)
 	  2 end markers   : white, black
 	                    the distance from the first block to these gives the exact
@@ -15,15 +15,25 @@
 
 	Data bits, most significant first:
 
-	  4   format version (currently 1)
+	  4   format version (currently 2)
 	  8   change counter, wraps at 256
-	  260 13 slots x 20 bits, item ID or 0 for an empty slot
+	  234 13 slots x 18 bits, item ID or 0 for an empty slot
 	  16  CRC-16/CCITT-FALSE over the preceding bits, padded to whole bytes
 
+	That is 262 bits in 264, so the last 2 bits are spare.
+
 	Slots are in SLOT_IDS order below, matching the game's inventory slot IDs.
+
+	Blocks are sized in real screen pixels (see apply_pixel_scale), which keeps the
+	strip as small as the decoder can read regardless of resolution or UI scale.
 ]]
 
-local BLOCK_SIZE = 8
+-- block size in real screen pixels. wow.export captures the screen at its true
+-- resolution, so a block arrives exactly this wide; the decoder needs about 3.5
+-- pixels per block, and 5 still reads if a capture is scaled down to 0.8
+local BLOCK_W = 5
+local BLOCK_H = 5
+
 local MARKERS = {
 	{ 0, 0, 0 },
 	{ 1, 1, 1 },
@@ -37,9 +47,10 @@ local END_MARKERS = {
 	{ 0, 0, 0 },
 }
 
-local FORMAT_VERSION = 1
-local SLOT_BITS = 20
-local DATA_BLOCKS = 48
+local FORMAT_VERSION = 2
+local SLOT_BITS = 18
+local SLOT_MAX = 2 ^ SLOT_BITS
+local DATA_BLOCKS = 44
 
 -- game inventory slot IDs, in the order they are packed into the payload
 local SLOT_IDS = {
@@ -92,6 +103,13 @@ local function build_payload()
 
 	for _, slot_id in ipairs(SLOT_IDS) do
 		local item_id = GetInventoryItemID('player', slot_id) or 0
+
+		-- 18 bits covers every live item ID; report an out-of-range one as empty
+		-- rather than sending its low bits, which would name a different item
+		if item_id >= SLOT_MAX then
+			item_id = 0
+		end
+
 		push_bits(bits, item_id, SLOT_BITS)
 	end
 
@@ -109,25 +127,42 @@ local function build_payload()
 	return bits
 end
 
+--- Scale the frame so one of its units is one real screen pixel.
+--
+-- A unit at scale 1 is screen_height/768 pixels, so on a 4K display an 8 unit
+-- block is 22.5 pixels wide. Scaling by the inverse makes the sizes below mean
+-- what they say. SetIgnoreParentScale keeps UIParent's own scale out of it.
+local function apply_pixel_scale()
+	local physical_height
+	if GetPhysicalScreenSize then
+		local _, height = GetPhysicalScreenSize()
+		physical_height = height
+	end
+
+	if not physical_height or physical_height <= 0 then
+		physical_height = GetScreenHeight() * UIParent:GetEffectiveScale()
+	end
+
+	frame:SetScale(768 / physical_height)
+end
+
 local function create_frame()
 	frame = CreateFrame('Frame', 'WoWExportLiveSyncStrip', UIParent)
 
-	-- draw in physical pixels: ignore the UI scale so block size does not
-	-- depend on resolution or the user's UI scale setting
 	if frame.SetIgnoreParentScale then
 		frame:SetIgnoreParentScale(true)
 	end
 
-	frame:SetScale(1)
+	apply_pixel_scale()
 	frame:SetFrameStrata('TOOLTIP')
-	frame:SetSize((#MARKERS + DATA_BLOCKS + #END_MARKERS) * BLOCK_SIZE, BLOCK_SIZE)
+	frame:SetSize((#MARKERS + DATA_BLOCKS + #END_MARKERS) * BLOCK_W, BLOCK_H)
 	frame:ClearAllPoints()
 	frame:SetPoint('TOPLEFT', UIParent, 'TOPLEFT', 0, 0)
 
 	for i = 1, #MARKERS + DATA_BLOCKS + #END_MARKERS do
 		local tex = frame:CreateTexture(nil, 'OVERLAY')
-		tex:SetSize(BLOCK_SIZE, BLOCK_SIZE)
-		tex:SetPoint('TOPLEFT', frame, 'TOPLEFT', (i - 1) * BLOCK_SIZE, 0)
+		tex:SetSize(BLOCK_W, BLOCK_H)
+		tex:SetPoint('TOPLEFT', frame, 'TOPLEFT', (i - 1) * BLOCK_W, 0)
 		blocks[i] = tex
 	end
 
@@ -169,10 +204,17 @@ end
 local events = CreateFrame('Frame')
 events:RegisterEvent('PLAYER_ENTERING_WORLD')
 events:RegisterEvent('PLAYER_EQUIPMENT_CHANGED')
+events:RegisterEvent('DISPLAY_SIZE_CHANGED')
+events:RegisterEvent('UI_SCALE_CHANGED')
 events:RegisterUnitEvent('UNIT_INVENTORY_CHANGED', 'player')
 events:SetScript('OnEvent', function(_, event)
 	if event == 'PLAYER_ENTERING_WORLD' then
 		redraw()
+	elseif event == 'DISPLAY_SIZE_CHANGED' or event == 'UI_SCALE_CHANGED' then
+		-- a unit is a different number of pixels now, so re-derive the scale
+		if frame then
+			apply_pixel_scale()
+		end
 	else
 		bump()
 	end

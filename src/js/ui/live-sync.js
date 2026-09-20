@@ -5,7 +5,7 @@
 
 const log = require('../log');
 const screencap = require('../screencap');
-const { decode_frame } = require('./strip-decoder');
+const { decode_frame, TOTAL_BLOCKS } = require('./strip-decoder');
 
 // pixels kept around the strip when capturing just its region, so a small shift
 // (a window moving, the game's UI scale changing) is still caught
@@ -56,6 +56,7 @@ class LiveSync {
 		this.hint = undefined;
 		this.misses = 0;
 		this.last_counter = null;
+		this.logged_screen = false;
 
 		this.timer = setInterval(() => {
 			try {
@@ -101,6 +102,13 @@ class LiveSync {
 		}
 
 		const screen = screencap.virtualScreen();
+		if (!this.logged_screen) {
+			// a capture that is not DPI aware arrives scaled down, which shrinks the
+			// strip; worth knowing if the strip ever stops being found
+			log.write('Live sync searching %dx%d at %d,%d (dpi aware: %s)', screen.width, screen.height, screen.x, screen.y, screen.dpiAware !== false);
+			this.logged_screen = true;
+		}
+
 		const payload = this._read(screen);
 		if (!payload) {
 			this.misses = 0;
@@ -110,7 +118,7 @@ class LiveSync {
 
 		// narrow to the strip's own region for subsequent reads
 		const strip = payload.strip;
-		const width = Math.ceil((strip.pitch * 55) + REGION_MARGIN * 2);
+		const width = Math.ceil((strip.pitch * TOTAL_BLOCKS) + REGION_MARGIN * 2);
 		const height = Math.ceil(strip.pitch + REGION_MARGIN * 2);
 
 		this.region = {

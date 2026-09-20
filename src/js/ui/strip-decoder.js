@@ -10,21 +10,23 @@
  * Layout, left to right, one block each:
  *
  *   5 marker blocks : black, white, red, green, blue
- *   48 data blocks  : 6 bits each, 2 bits per channel, most significant first,
+ *   44 data blocks  : 6 bits each, 2 bits per channel, most significant first,
  *                     channel level = value * 85
  *   2 end markers   : white, black
  *
  * Payload bits, most significant first: 4 format version, 8 change counter,
- * 13 slots x 20 bits (game inventory slot IDs, 0 for empty), 16 CRC-16/CCITT-FALSE
+ * 13 slots x 18 bits (game inventory slot IDs, 0 for empty), 16 CRC-16/CCITT-FALSE
  * over the preceding bits padded to whole bytes.
  *
  * See addons/live-sync/ for the addon and a standalone decoder for PNG files.
  */
 
 const MARKER_COUNT = 5;
-const DATA_BLOCKS = 48;
-const SLOT_BITS = 20;
-const FORMAT_VERSION = 1;
+const DATA_BLOCKS = 44;
+const END_MARKER_COUNT = 2;
+const TOTAL_BLOCKS = MARKER_COUNT + DATA_BLOCKS + END_MARKER_COUNT;
+const SLOT_BITS = 18;
+const FORMAT_VERSION = 2;
 
 const MARKER_COLOURS = [
 	[0, 0, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255]
@@ -104,43 +106,54 @@ function next_run(view, x, y, colour, limit) {
 }
 
 /**
- * Refine the pitch against the white end marker, 53 blocks from the start.
+ * Pitches measured against the white end marker, closest to the estimate first.
  *
- * Marker centres give the pitch to about half a pixel, which is fine for locating
- * the strip but drifts by a whole block by the end of the data. Measuring across the
- * whole strip divides that error by 53. The end marker is white followed by black,
- * which is what separates it from a data block that happens to be white.
- * @returns {number}
+ * Marker centres give the pitch to within a fraction of a pixel, which is fine for
+ * locating the strip but drifts by whole blocks by the end of the data. Measuring
+ * across the whole strip divides that error by the number of blocks. The end marker
+ * is white followed by black, which is what separates it from a data block that
+ * happens to be white.
+ *
+ * Several positions can fit, so every one is returned and the caller keeps whichever
+ * produces a payload that passes its CRC.
+ * @returns {number[]}
  */
 function refine_pitch(view, x, y, pitch) {
 	const end_offset = MARKER_COUNT + DATA_BLOCKS;
 	const expected = x + end_offset * pitch;
-	const from = Math.max(0, Math.round(expected - 2.5 * pitch));
-	const to = Math.min(view.width - 1, Math.round(expected + 2.5 * pitch));
 
-	let best = null;
+	// the estimate comes from two marker centres two blocks apart, so it can be out
+	// by a fraction of a pixel per block, which adds up over the length of the strip
+	const slack = Math.max(2.5 * pitch, 0.3 * end_offset);
+	const from = Math.max(0, Math.round(expected - slack));
+	const to = Math.min(view.width - 1, Math.round(expected + slack));
+
+	const found = [];
 	for (let probe = from; probe <= to; probe++) {
 		if (!view.near(probe, y, MARKER_COLOURS[1], 30) || (probe > 0 && view.near(probe - 1, y, MARKER_COLOURS[1], 30)))
 			continue;
 
+		const candidate = (probe - x) / end_offset;
 		const length = run_length(view, probe, y, MARKER_COLOURS[1]);
-		if (length < pitch * 0.5 || length > pitch * 1.5)
+		if (length < candidate * 0.5 || length > candidate * 1.5)
 			continue;
 
 		// the final black marker follows it
-		const after = Math.round(probe + 1.5 * pitch);
+		const after = Math.round(probe + 1.5 * candidate);
 		if (after >= view.width || !view.near(after, y, MARKER_COLOURS[0], 30))
 			continue;
 
-		if (best === null || Math.abs(probe - expected) < Math.abs(best - expected))
-			best = probe;
+		found.push(probe);
 	}
 
-	return best === null ? pitch : (best - x) / end_offset;
+	found.sort((a, b) => Math.abs(a - expected) - Math.abs(b - expected));
+
+	// the unrefined estimate is the last resort, for a capture that cuts the end off
+	return found.map(probe => (probe - x) / end_offset).concat(pitch);
 }
 
 /**
- * Locate the strip in a frame.
+ * Locate the strip in a frame, yielding every candidate position.
  *
  * The search anchors on the red marker (the third block) rather than the black
  * first block: black is common on screen, and a black area running up to the strip
@@ -151,12 +164,12 @@ function refine_pitch(view, x, y, pitch) {
  * blurs one pixel either side of every block.
  *
  * @param {PixelView} view
- * @param {object} [hint] - previously found { x, y, pitch }, checked first
- * @returns {object|null} - { x, y, pitch }
+ * @param {object} [hint] - previously found { x, y, pitch }, tried first
+ * @yields {object} - { x, y, pitch }
  */
-function find_strip(view, hint) {
+function* find_strips(view, hint) {
 	if (hint && hint.x < view.width && hint.y < view.height && markers_match(view, hint.x, hint.y, hint.pitch))
-		return hint;
+		yield hint;
 
 	for (let y = 0; y < view.height; y += 2) {
 		let x = 0;
@@ -179,18 +192,17 @@ function find_strip(view, hint) {
 
 				if (pitch >= 3 && start >= -2 && start + (MARKER_COUNT + DATA_BLOCKS) * pitch <= view.width) {
 					const from = Math.max(start, 0);
-					const refined = refine_pitch(view, from, y, pitch);
 
-					if (markers_match(view, from, y, refined))
-						return { x: from, y, pitch: refined };
+					for (const refined of refine_pitch(view, from, y, pitch)) {
+						if (markers_match(view, from, y, refined))
+							yield { x: from, y, pitch: refined };
+					}
 				}
 			}
 
 			x += red;
 		}
 	}
-
-	return null;
 }
 
 /**
@@ -229,12 +241,13 @@ function read_payload(view, strip) {
 		ofs += SLOT_BITS;
 	}
 
-	// CRC over the payload bits, zero padded to whole bytes
+	// CRC over the payload bits, zero padded to whole bytes. The padding must be
+	// zeroes, not the CRC bits that follow, which is what the addon hashes.
 	let crc = 0xffff;
 	for (let i = 0; i < ofs; i += 8) {
 		let byte = 0;
 		for (let j = 0; j < 8; j++)
-			byte = byte * 2 + (bits[i + j] ?? 0);
+			byte = byte * 2 + (i + j < ofs ? bits[i + j] : 0);
 
 		crc ^= byte << 8;
 		for (let b = 0; b < 8; b++)
@@ -255,22 +268,22 @@ function read_payload(view, strip) {
  */
 function decode_frame(pixels, width, height, hint) {
 	const view = new PixelView(pixels, width, height);
-	const strip = find_strip(view, hint);
-	if (!strip)
-		return null;
 
-	const payload = read_payload(view, strip);
-	if (!payload.crc_ok || payload.version !== FORMAT_VERSION)
-		return null;
+	for (const strip of find_strips(view, hint)) {
+		const payload = read_payload(view, strip);
+		if (payload.crc_ok && payload.version === FORMAT_VERSION)
+			return { version: payload.version, counter: payload.counter, items: payload.items, strip };
+	}
 
-	return { version: payload.version, counter: payload.counter, items: payload.items, strip };
+	return null;
 }
 
 module.exports = {
 	FORMAT_VERSION,
+	TOTAL_BLOCKS,
 	SLOT_IDS,
 	decode_frame,
 
 	// exposed for the tests in addons/live-sync/
-	_internal: { PixelView, find_strip, read_payload }
+	_internal: { PixelView, find_strips, read_payload }
 };

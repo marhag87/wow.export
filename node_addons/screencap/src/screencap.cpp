@@ -3,12 +3,50 @@
 // available to the app's chrome-extension:// page, so frames come from GDI instead.
 //
 // capture(x, y, width, height) -> { width, height, data: Buffer } in RGBA order
-// virtualScreen()              -> { x, y, width, height } bounds of all displays
+// virtualScreen()              -> { x, y, width, height, dpiAware } bounds of all displays
 
 #include <napi.h>
 
 #ifdef _WIN32
 #include <windows.h>
+
+// The app is only system-DPI-aware, so Windows virtualises GDI for it: on a display
+// running above 100% scaling both the screen metrics and BitBlt come back shrunk to
+// the scaled size, and the captured image is a resampled copy rather than the real
+// pixels. Making just this thread per-monitor-aware for the duration of a call gets
+// the true pixels, which keeps the addon's strip crisp and lets it be much smaller.
+//
+// Resolved at runtime so the addon still builds and runs where the call is missing
+// (before Windows 10 1607), where captures stay scaled but otherwise work.
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((HANDLE) -4)
+#endif
+
+typedef HANDLE (WINAPI* SetThreadDpiAwarenessContextFn)(HANDLE);
+
+// restores the thread's previous awareness however we leave the scope
+struct ThreadDpiAwareness {
+	SetThreadDpiAwarenessContextFn setter = nullptr;
+	HANDLE previous = nullptr;
+
+	ThreadDpiAwareness() {
+		HMODULE user32 = GetModuleHandleW(L"user32.dll");
+		if (user32 != nullptr)
+			setter = reinterpret_cast<SetThreadDpiAwarenessContextFn>(GetProcAddress(user32, "SetThreadDpiAwarenessContext"));
+
+		if (setter != nullptr)
+			previous = setter(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+	}
+
+	bool active() const {
+		return setter != nullptr && previous != nullptr;
+	}
+
+	~ThreadDpiAwareness() {
+		if (setter != nullptr && previous != nullptr)
+			setter(previous);
+	}
+};
 
 // releases the device contexts and bitmap however we leave the function
 struct CaptureResources {
@@ -50,6 +88,9 @@ Napi::Value Capture(const Napi::CallbackInfo& info) {
 		Napi::RangeError::New(env, "capture width and height must be positive").ThrowAsJavaScriptException();
 		return env.Null();
 	}
+
+	// physical pixels, matching the coordinates virtualScreen() reports
+	ThreadDpiAwareness dpi;
 
 	CaptureResources res;
 	res.screen = GetDC(nullptr);
@@ -113,11 +154,14 @@ Napi::Value Capture(const Napi::CallbackInfo& info) {
 Napi::Value VirtualScreen(const Napi::CallbackInfo& info) {
 	Napi::Env env = info.Env();
 
+	ThreadDpiAwareness dpi;
+
 	Napi::Object result = Napi::Object::New(env);
 	result.Set("x", Napi::Number::New(env, GetSystemMetrics(SM_XVIRTUALSCREEN)));
 	result.Set("y", Napi::Number::New(env, GetSystemMetrics(SM_YVIRTUALSCREEN)));
 	result.Set("width", Napi::Number::New(env, GetSystemMetrics(SM_CXVIRTUALSCREEN)));
 	result.Set("height", Napi::Number::New(env, GetSystemMetrics(SM_CYVIRTUALSCREEN)));
+	result.Set("dpiAware", Napi::Boolean::New(env, dpi.active()));
 	return result;
 }
 

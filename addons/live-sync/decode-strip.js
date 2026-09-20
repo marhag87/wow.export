@@ -2,26 +2,19 @@
 /*
 	Decode a wow.export Live Sync pixel strip from a PNG screenshot.
 
-	  node decode-strip.js <screenshot.png> [pitch]
+	  node decode-strip.js <screenshot.png>
 
-	`pitch` overrides the measured block pitch, for testing captures taken before the
-	end marker existed.
-
-	Finds the marker run (black, white, red, green, blue) anywhere in the image, then
-	measures the exact block pitch from the white end marker, since at most UI scales
-	the pitch is fractional and rounding it drifts by a whole block across the strip.
-	Used to prove the channel survives a real capture before wiring it into the app;
-	the app itself decodes the same layout from a canvas instead of a PNG file.
+	Reads the PNG here and hands the pixels to the app's own decoder, so this tool
+	and the app can never disagree about the wire format. Useful for checking that
+	the strip survives a real capture without running the app.
 */
 
 const fs = require('fs');
+const path = require('path');
 const zlib = require('zlib');
 
-const MARKER_COUNT = 5;
-const DATA_BLOCKS = 48;
-const END_MARKER_COUNT = 2;
-const SLOT_BITS = 20;
-const SLOT_IDS = [1, 3, 4, 5, 6, 7, 8, 9, 10, 15, 16, 17, 19];
+const { decode_frame, SLOT_IDS, FORMAT_VERSION } = require(path.join(__dirname, '..', '..', 'src', 'js', 'ui', 'strip-decoder'));
+
 const SLOT_NAMES = {
 	1: 'head', 3: 'shoulders', 4: 'shirt', 5: 'chest', 6: 'waist', 7: 'legs',
 	8: 'feet', 9: 'wrist', 10: 'hands', 15: 'back', 16: 'main hand',
@@ -100,142 +93,6 @@ function read_png(file) {
 	return { width, height, channels, pixels };
 }
 
-const px = (img, x, y) => {
-	const ofs = (y * img.width + x) * img.channels;
-	return [img.pixels[ofs], img.pixels[ofs + 1], img.pixels[ofs + 2]];
-};
-
-const near = (pixel, r, g, b, tolerance = 40) =>
-	Math.abs(pixel[0] - r) <= tolerance &&
-	Math.abs(pixel[1] - g) <= tolerance &&
-	Math.abs(pixel[2] - b) <= tolerance;
-
-const MARKER_COLOURS = [
-	[0, 0, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255]
-];
-
-/**
- * Measure the block pitch, which is fractional at most UI scales: the game rounds
- * each block's own width to whole pixels, so a rounded pitch drifts by a whole
- * block across the strip (e.g. blocks of 23 and 22 pixels for a pitch of 22.5).
- *
- * The blue marker is 4 blocks from the start, which fixes the pitch to a quarter
- * pixel. The white end marker, 53 blocks along, refines it further when found.
- */
-function measure_pitch(img, x, y, run) {
-	const row = y + (run >> 1);
-	let pitch = run;
-
-	// blue marker: the first blue pixel after the black, red and green markers
-	for (let probe = x + 1; probe < Math.min(img.width, x + 8 * run); probe++) {
-		if (near(px(img, probe, row), 0, 0, 255, 30)) {
-			pitch = (probe - x) / 4;
-			break;
-		}
-	}
-
-	const END_OFFSET = MARKER_COUNT + DATA_BLOCKS;
-	const expected = x + END_OFFSET * pitch;
-
-	// white end marker, within a block of where the pitch so far puts it
-	for (let probe = Math.max(0, Math.round(expected - pitch)); probe <= Math.min(img.width - 1, Math.round(expected + pitch)); probe++) {
-		const here = near(px(img, probe, row), 255, 255, 255, 30);
-		const before = probe > 0 && near(px(img, probe - 1, row), 255, 255, 255, 30);
-
-		if (here && !before)
-			return (probe - x) / END_OFFSET;
-	}
-
-	return pitch;
-}
-
-/** Locate the strip: returns { x, y, block } of the first marker block's top-left. */
-function find_strip(img) {
-	for (let y = 0; y < img.height; y++) {
-		let x = 0;
-		while (x < img.width) {
-			if (!near(px(img, x, y), 0, 0, 0, 20)) {
-				x++;
-				continue;
-			}
-
-			// measure the black run, that is the block size
-			let block = 0;
-			while (x + block < img.width && near(px(img, x + block, y), 0, 0, 0, 20))
-				block++;
-
-			if (block >= 3 && block <= 64) {
-				const total = MARKER_COUNT + DATA_BLOCKS;
-				if (x + total * block <= img.width && y + block <= img.height) {
-					let ok = true;
-					for (let m = 1; m < MARKER_COUNT && ok; m++) {
-						const sample = px(img, x + m * block + (block >> 1), y + (block >> 1));
-						ok = near(sample, ...MARKER_COLOURS[m]);
-					}
-
-					if (ok)
-						return { x, y, block, pitch: measure_pitch(img, x, y, block) };
-				}
-			}
-
-			x += Math.max(block, 1);
-		}
-	}
-
-	return null;
-}
-
-function decode(img, strip) {
-	const { x, y, block, pitch } = strip;
-	const half = block >> 1;
-	const bits = [];
-
-	for (let i = 0; i < DATA_BLOCKS; i++) {
-		const bx = Math.round(x + (MARKER_COUNT + i + 0.5) * pitch);
-		const pixel = px(img, Math.min(bx, img.width - 1), y + half);
-
-		for (const channel of pixel) {
-			// levels are 0, 85, 170, 255
-			const value = Math.min(3, Math.max(0, Math.round(channel / 85)));
-			bits.push((value >> 1) & 1, value & 1);
-		}
-	}
-
-	const take = (ofs, width) => {
-		let value = 0;
-		for (let i = 0; i < width; i++)
-			value = value * 2 + bits[ofs + i];
-		return value;
-	};
-
-	const version = take(0, 4);
-	const counter = take(4, 8);
-	const items = {};
-	let ofs = 12;
-	for (const slot_id of SLOT_IDS) {
-		items[slot_id] = take(ofs, SLOT_BITS);
-		ofs += SLOT_BITS;
-	}
-
-	// CRC over the payload bits, zero padded to whole bytes
-	const bytes = [];
-	for (let i = 0; i < ofs; i += 8) {
-		let byte = 0;
-		for (let j = 0; j < 8; j++)
-			byte = byte * 2 + (bits[i + j] ?? 0);
-		bytes.push(byte);
-	}
-
-	let crc = 0xffff;
-	for (const byte of bytes) {
-		crc ^= byte << 8;
-		for (let i = 0; i < 8; i++)
-			crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
-	}
-
-	return { version, counter, items, crc_ok: crc === take(ofs, 16) };
-}
-
 const file = process.argv[2];
 if (!file) {
 	console.error('usage: node decode-strip.js <screenshot.png>');
@@ -245,18 +102,24 @@ if (!file) {
 const img = read_png(file);
 console.log(`image ${img.width}x${img.height}, ${img.channels} channels`);
 
-const strip = find_strip(img);
-if (!strip) {
-	console.error('no strip found: is the addon loaded, and is the capture lossless (PNG, not JPEG)?');
+// the decoder wants RGBA; widen a 24 bit PNG to match
+let pixels = img.pixels;
+if (img.channels === 3) {
+	pixels = Buffer.alloc(img.width * img.height * 4, 255);
+	for (let i = 0, o = 0; i < img.pixels.length; i += 3, o += 4) {
+		pixels[o] = img.pixels[i];
+		pixels[o + 1] = img.pixels[i + 1];
+		pixels[o + 2] = img.pixels[i + 2];
+	}
+}
+
+const result = decode_frame(pixels, img.width, img.height);
+if (!result) {
+	console.error('no valid strip found: is the addon loaded, and is the capture lossless (PNG, not JPEG) and unscaled?');
 	process.exit(2);
 }
 
-if (process.argv[3])
-	strip.pitch = Number(process.argv[3]);
-
-console.log(`strip at ${strip.x},${strip.y}, block run ${strip.block}px, pitch ${strip.pitch.toFixed(4)}px`);
-
-const result = decode(img, strip);
-console.log(`format version ${result.version}, counter ${result.counter}, crc ${result.crc_ok ? 'ok' : 'FAILED'}`);
+console.log(`strip at ${result.strip.x},${result.strip.y}, pitch ${result.strip.pitch.toFixed(4)}px`);
+console.log(`format version ${result.version} (expected ${FORMAT_VERSION}), counter ${result.counter}`);
 for (const slot_id of SLOT_IDS)
-	console.log(`  ${String(SLOT_NAMES[slot_id]).padEnd(10)} ${result.items[slot_id] || '-'}`);
+	console.log(`  ${String(SLOT_NAMES[slot_id]).padEnd(10)} ${result.items.get(slot_id) || '-'}`);
