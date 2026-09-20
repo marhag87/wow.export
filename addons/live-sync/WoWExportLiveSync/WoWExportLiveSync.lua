@@ -28,11 +28,17 @@
 	strip as small as the decoder can read regardless of resolution or UI scale.
 ]]
 
--- block size in real screen pixels. wow.export captures the screen at its true
--- resolution, so a block arrives exactly this wide; the decoder needs about 3.5
--- pixels per block, and 5 still reads if a capture is scaled down to 0.8
-local BLOCK_W = 5
-local BLOCK_H = 5
+-- Block size in real screen pixels. wow.export captures the screen at its true
+-- resolution, so a block arrives exactly this wide and one pixel is enough.
+--
+-- There is no margin left at this size: anything that resamples the capture, or
+-- shifts it by a pixel, loses the strip entirely, and the app just reports it as
+-- not visible. Raising these to 3 restores some tolerance if that ever happens.
+--
+-- The height is 2 because the app's search steps two rows at a time, so a two
+-- pixel line is guaranteed to fall on a row it looks at.
+local BLOCK_W = 1
+local BLOCK_H = 2
 
 local MARKERS = {
 	{ 0, 0, 0 },

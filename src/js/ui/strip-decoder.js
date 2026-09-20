@@ -65,7 +65,7 @@ class PixelView {
  */
 function markers_match(view, x, y, pitch) {
 	for (let m = 0; m < MARKER_COUNT; m++) {
-		const bx = Math.round(x + (m + 0.5) * pitch);
+		const bx = Math.floor(x + (m + 0.5) * pitch);
 		if (bx >= view.width || !view.near(bx, y, MARKER_COLOURS[m], 30))
 			return false;
 	}
@@ -86,8 +86,7 @@ function run_length(view, x, y, colour, tolerance = 30) {
 }
 
 /**
- * Find the next run of `colour` at or after x, ignoring runs of a single pixel,
- * which are the blended edges a scaled capture leaves between blocks.
+ * Find the next run of `colour` at or after x.
  * @returns {object|null} - { start, length, centre }
  */
 function next_run(view, x, y, colour, limit) {
@@ -96,10 +95,7 @@ function next_run(view, x, y, colour, limit) {
 			continue;
 
 		const length = run_length(view, probe, y, colour);
-		if (length >= 2)
-			return { start: probe, length, centre: probe + (length - 1) / 2 };
-
-		probe += length;
+		return { start: probe, length, centre: probe + (length - 1) / 2 };
 	}
 
 	return null;
@@ -139,7 +135,7 @@ function refine_pitch(view, x, y, pitch) {
 			continue;
 
 		// the final black marker follows it
-		const after = Math.round(probe + 1.5 * candidate);
+		const after = Math.floor(probe + 1.5 * candidate);
 		if (after >= view.width || !view.near(after, y, MARKER_COLOURS[0], 30))
 			continue;
 
@@ -175,7 +171,7 @@ function* find_strips(view, hint) {
 		let x = 0;
 		while (x < view.width) {
 			const red = run_length(view, x, y, MARKER_COLOURS[2]);
-			if (red < 3 || red > 64) {
+			if (red < 1 || red > 64) {
 				x += Math.max(red, 1);
 				continue;
 			}
@@ -183,16 +179,19 @@ function* find_strips(view, hint) {
 			const red_centre = x + (red - 1) / 2;
 
 			// green then blue follow, within a few blocks
-			const green = next_run(view, x + red, y, MARKER_COLOURS[3], x + red + 3 * red);
-			const blue = green && next_run(view, green.start + green.length, y, MARKER_COLOURS[4], green.start + 3 * red);
+			const green = next_run(view, x + red, y, MARKER_COLOURS[3], x + red + 3 * red + 1);
+			const blue = green && next_run(view, green.start + green.length, y, MARKER_COLOURS[4], green.start + 3 * red + 1);
 
 			if (blue) {
 				const pitch = (blue.centre - red_centre) / 2;
 				const start = Math.round(red_centre - 2.5 * pitch);
 
-				if (pitch >= 3 && start >= -2 && start + (MARKER_COUNT + DATA_BLOCKS) * pitch <= view.width) {
-					const from = Math.max(start, 0);
+				const from = Math.max(start, 0);
 
+				// the estimate is good enough to check the five markers against, and
+				// rejecting here keeps the cost of a stray red pixel low: a single
+				// pixel block means far more candidates reach this point
+				if (pitch >= 1 && start >= -2 && start + (MARKER_COUNT + DATA_BLOCKS) * pitch <= view.width && markers_match(view, from, y, pitch)) {
 					for (const refined of refine_pitch(view, from, y, pitch)) {
 						if (markers_match(view, from, y, refined))
 							yield { x: from, y, pitch: refined };
@@ -214,7 +213,7 @@ function read_payload(view, strip) {
 	const bits = [];
 
 	for (let i = 0; i < DATA_BLOCKS; i++) {
-		const bx = Math.min(Math.round(x + (MARKER_COUNT + i + 0.5) * pitch), view.width - 1);
+		const bx = Math.min(Math.floor(x + (MARKER_COUNT + i + 0.5) * pitch), view.width - 1);
 		const ofs = (y * view.width + bx) * 4;
 
 		for (let channel = 0; channel < 3; channel++) {
