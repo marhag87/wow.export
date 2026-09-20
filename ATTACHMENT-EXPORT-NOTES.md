@@ -14,8 +14,9 @@ reads equipped gear off the running game and re-exports (see "Features added"). 
 characters into a folder named after the character, saving updates the open
 saved character in place, and glTF character exports can face +Z (see
 "Features added"). Also fixed the Characters tab taking ~25s to open, which was
-a quadratic DB2 row lookup rather than any download (see "Startup
-performance").
+a quadratic DB2 row lookup rather than any download (see "Startup performance"),
+and shrank the live sync strip from roughly 1240x22 pixels to 51x2 (see
+"Shrinking the strip").
 
 ## How the viewer places attachments
 
@@ -488,11 +489,39 @@ strip, area-averages it down and runs the real decoder:
    whose CRC passes. This also made behaviour monotonic in block size: before it,
    7 pixel blocks failed at 0.6667 scale but worked at 0.5.
 
-Measured floor is about 3.5 pixels per block. 5 was chosen so the strip still
-reads if a capture is scaled to 0.8, i.e. if the DPI-aware path is ever
-unavailable; at full resolution 3 works and smaller needs decoder changes, since
-the run-length minimums and `Math.round` centre sampling assume a blurred
-capture.
+Measured floor at that point was about 3.5 pixels per block, and 5 was chosen so
+the strip still read if a capture were scaled to 0.8. Going below that needed the
+decoder changes below.
+
+### One pixel per block (commit 78c1eb36)
+
+The strip is now **51x2 pixels**. Since captures are no longer resampled, the
+decoder's blur tolerance was dead weight:
+
+- block centres are sampled with `Math.floor`, not `Math.round`. `round` lands in
+  the *next* block once a block is one or two pixels wide, and `floor` is the
+  correct pixel index for a centre coordinate at any size. This was costing
+  margin at every size: a 5 pixel strip now decodes down to a capture scaled to
+  0.5, where it previously gave up below 0.75.
+- `next_run` no longer discards single pixel runs, which only existed as the
+  blend edges of a scaled capture.
+- the red anchor accepts a single pixel run, and the minimum pitch drops to 1.
+- candidates are checked against the five markers *before* the pitch is measured
+  across the whole strip. Far more candidates reach that point at this size, so
+  this matters: a full sweep of the 8320x2160 desktop with no strip present takes
+  74ms, which is well inside the 1s interval.
+
+The strip is 2 pixels tall, not 1, because the search steps 2 rows at a time, so
+a 2 pixel line is guaranteed to fall on a row it looks at.
+
+**There is no margin left at this size.** Anything that resamples the capture or
+shifts it by a pixel loses the strip, and it surfaces only as "strip not
+visible", never as an error. `BLOCK_W = 3` in the addon buys the tolerance back,
+and the decoder reads any block size, so it is a one line change. This is
+acceptable here because the setup is a single known machine.
+
+Verified in game: `found the strip at 0,0 (pitch 1.000)`, gear change applied and
+exported.
 
 ## Startup performance: DB2 row lookups (commit 56571141)
 
@@ -667,8 +696,8 @@ it).
   `1a452efe` (export to character folder), `2c00e8c2` (save updates the open
   character), `63d03eef` (face forward +Z), `0913d9d2` (bare feet),
   `e849d4f9` (cloak textures), `8e43c888` (live sync), `56571141` (indexed
-  DB2 row lookups) and `27282234` (smaller live sync strip) pushed to
-  `origin/main`.
+  DB2 row lookups), `27282234` (smaller live sync strip) and `78c1eb36` (one
+  pixel per block) pushed to `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
