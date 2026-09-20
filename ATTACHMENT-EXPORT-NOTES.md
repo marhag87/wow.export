@@ -9,7 +9,8 @@ client, the glTF alpha/double-sided bug (#5) is fixed and verified, and the
 project now builds locally (see "Building locally"). Also fixed: customization
 choices that enable several geosets only applied one (#7), and attachment
 bones lost their scale in most glTF animations (#8), boot textures covered
-Tauren hooves (#9), and cloaks rendered untextured (#10). Added: an option to export
+Tauren hooves (#9), and cloaks rendered untextured (#10). Added live sync, which
+reads equipped gear off the running game and re-exports (see "Features added"). Added: an option to export
 characters into a folder named after the character, saving updates the open
 saved character in place, and glTF character exports can face +Z (see
 "Features added").
@@ -378,6 +379,72 @@ Verified: Blender front view (numpad 1) shows the character from the front.
 vtube needed additional changes of its own to handle the rotated root
 (done in the vtube repo).
 
+### Live sync from the running game (commit 8e43c888)
+
+Goal: a gear change in game reaches vtube in seconds with no action taken. vtube
+already reloads an export when its files change, so only wow.export's side was
+missing.
+
+**Getting data out of the game.** Addons cannot write files on demand.
+Considered and rejected: SavedVariables (needs `/reload`, i.e. a keypress); the
+Armory API (only updates after logout, minutes late); reading client memory
+(against Blizzard's terms). A screenshot-based channel was tried next - the
+addon would call `Screenshot()` and wow.export would watch the folder - but
+`Screenshot` is nil in the Classic client (`TakeScreenshot` was removed in
+4.0.2), and it would clutter the screenshots folder anyway.
+
+**The channel that works:** the addon keeps a strip of coloured blocks on screen
+encoding the equipped item IDs, and wow.export reads it off the screen.
+
+| Part | What it is |
+| --- | --- |
+| `addons/live-sync/WoWExportLiveSync/` | The addon. 5 marker blocks (black, white, red, green, blue), 48 data blocks (6 bits each, 2 bits per channel, levels 0/85/170/255), 2 end markers (white, black). Payload: 4-bit format version, 8-bit change counter, 13 slots x 20-bit item ID, CRC-16/CCITT-FALSE. Redraws on `PLAYER_EQUIPMENT_CHANGED`; `/wxls` prints what it is encoding. |
+| `addons/live-sync/decode-strip.js` | Standalone decoder for a PNG screenshot, used to prove the channel before wiring anything up. Includes a minimal PNG reader. |
+| `src/js/ui/strip-decoder.js` | The same decode against a captured frame. |
+| `node_addons/screencap/` | Windows-only GDI screen grab (`capture(x, y, w, h)` -> RGBA, `virtualScreen()`). |
+| `src/js/screencap.js` | Loads it like `mmap.js`; reports unavailable rather than throwing. |
+| `src/js/ui/live-sync.js` | Finds the strip once across all displays, then grabs only its region each interval; rescans after 3 consecutive misses. |
+| `src/js/modules/tab_characters.js` | "Live sync from game" checkbox and status line; applies the equipment and exports, queued so a burst of swaps cannot overlap. |
+
+**Chromium capture is unavailable in this app.** `navigator.mediaDevices`,
+`navigator.webkitGetUserMedia` and `navigator.getUserMedia` are all undefined on
+the app's `chrome-extension://` page, even though it is a secure context;
+`nw.Screen.chooseDesktopMedia` exists but there is nothing to turn its source id
+into a stream. Hence the native addon. It needs `/std:c++17` in `binding.gyp`
+(`AdditionalOptions`), because VS 2019 ignores the `/std:c++20` the nw.js
+headers pass and `node-addon-api` 8.x uses `std::string_view`.
+
+**Two decoding traps, both real and both fixed:**
+
+1. *Fractional pitch.* The game rounds each block to whole pixels, so at the
+   test UI scale blocks alternate 23 and 22 pixels for a pitch of 22.5. Rounding
+   the pitch drifts a whole block a third of the way along - the first slots
+   decode, the rest are garbage. The white end marker, 53 blocks along, gives
+   the pitch to about 1/53 of a pixel; marker centres alone are only good to
+   half a pixel, which is not enough. The end marker is only accepted if its run
+   is about one block wide and is followed by the black block.
+2. *Anchoring on black.* The first search anchored on the black first block. A
+   second monitor whose top row is black ran straight into it, so the run looked
+   thousands of pixels wide, was rejected as too large, and the scan skipped the
+   strip. It now anchors on the red marker (rare on screen) and confirms green
+   and blue after it.
+
+Windows also hands the app scaled coordinates: a 4K panel at 125% is captured as
+3072x1728, so the strip arrives at 18 pixels per block. Verified decoding at
+full size and at 0.8, 0.6 and 0.5 scale, and that a capture without a strip
+decodes to nothing. Decode costs ~0.1ms per frame once the strip is located; the
+default interval is 1s (`chrLiveSyncIntervalMs`).
+
+**Behaviour decisions:** the toggle is view state, not config, so live sync is
+always off at launch. It switches itself off whenever the loaded model changes,
+since the game's gear must not land on a different character. The last opened
+saved character is remembered (`chrLastCharacter`) and reopened at startup, so
+live sync has the right character to dress instead of the default model. Item
+IDs only - appearance variants are rare in Classic, and the strip has spare
+capacity if that changes.
+
+Verified end to end: gear change in game -> export -> vtube reloads.
+
 ## Changes applied (commit 58fe6333, pushed to origin/main)
 
 | File | Change |
@@ -516,8 +583,8 @@ it).
 - `58fe6333` (attachment parenting), `42a67c4a` (material alpha),
   `5b241122` (customization geosets), `e3294fbe` (attachment bone scale),
   `1a452efe` (export to character folder), `2c00e8c2` (save updates the open
-  character), `63d03eef` (face forward +Z), `0913d9d2` (bare feet) and `e849d4f9` (cloak
-  textures) pushed to
+  character), `63d03eef` (face forward +Z), `0913d9d2` (bare feet),
+  `e849d4f9` (cloak textures) and `8e43c888` (live sync) pushed to
   `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
@@ -546,8 +613,8 @@ large contributions should start with a tracking issue coordinated in the
 Done: local build, Classic Tauren pauldron placement (#1), glTF material alpha
 and double-sidedness (#5), customization geosets (#7), attachment bone scale in
 animations (#8), export to character folder, save updates the open character,
-face forward (+Z), bare-feet boot textures (#9), cloak textures (#10), vtube
-cleanup (done in the vtube repo).
+face forward (+Z), bare-feet boot textures (#9), cloak textures (#10), live sync
+from the running game, vtube cleanup (done in the vtube repo).
 
 1. Test a one-handed weapon on the same character — a sword offset from the
    hand is the clearest check of attachment placement. Note the fingers will
