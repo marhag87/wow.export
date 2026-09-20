@@ -258,6 +258,7 @@ const makeNewView = () => {
 		chrCurrentCharacter: null, // { name, id } of the saved character open in the viewer, or null.
 		chrLiveSync: false, // Live sync toggle; deliberately not a saved setting, so it starts off.
 		chrLiveSyncStatus: '', // Live sync status line shown in the export panel.
+		chrLiveSyncSlotOptions: [], // Slots offered by the live sync filter; filled by the character tab.
 		colorPickerOpenFor: null, // Currently open color picker option ID.
 		colorPickerPosition: { x: 0, y: 0 }, // Color picker popup position.
 		chrImportChrName: '', // Character import, character name input.

@@ -71,6 +71,14 @@ class LiveSync {
 		on_status('looking for the addon strip...');
 	}
 
+	/**
+	 * Apply the next frame even if the game has not changed anything, for when the
+	 * app's own settings change what a payload means.
+	 */
+	resync() {
+		this.last_counter = null;
+	}
+
 	stop() {
 		if (this.timer !== null) {
 			clearInterval(this.timer);

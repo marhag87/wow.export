@@ -3544,7 +3544,38 @@ input[type=number]::-webkit-outer-spin-button {
 .chr-live-sync-status {
 	font-size: 0.85em;
 	color: var(--font-secondary, #aaa);
-	max-width: 260px;
+	text-align: center;
+}
+
+/* lives in the customization column, which is otherwise empty below the options:
+   in the export panel this list covered the equipment slots behind it */
+.chr-live-sync-panel {
+	margin-bottom: 18px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.chr-live-sync-title {
+	color: var(--font-alt);
+	font-size: 14px;
+	text-align: center;
+}
+
+/* two columns, to keep the panel short */
+.chr-live-sync-slots {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	column-gap: 8px;
+}
+
+.chr-live-sync-slots .ui-checkbox {
+	font-size: 0.85em;
+}
+
+.chr-live-sync-toggles {
+	font-size: 0.85em;
+	text-align: center;
 }
 
 /* fill the panel width without widening it (overrides the global 300px text input width) */

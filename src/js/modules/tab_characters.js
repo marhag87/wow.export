@@ -1983,6 +1983,28 @@ const LIVE_SYNC_SLOT_MAP = {
 	9: [9], 10: [10], 15: [15], 16: [16], 17: [17], 19: [19]
 };
 
+// the slots live sync can be told to leave alone, in the order they are listed
+const LIVE_SYNC_SLOT_LABELS = [
+	{ id: 1, label: 'Head' }, { id: 3, label: 'Shoulders' }, { id: 4, label: 'Shirt' },
+	{ id: 5, label: 'Chest' }, { id: 6, label: 'Waist' }, { id: 7, label: 'Legs' },
+	{ id: 8, label: 'Feet' }, { id: 9, label: 'Wrist' }, { id: 10, label: 'Hands' },
+	{ id: 15, label: 'Back' }, { id: 16, label: 'Main hand' }, { id: 17, label: 'Off hand' },
+	{ id: 19, label: 'Tabard' }
+];
+
+/**
+ * Game slots live sync is allowed to drive. A slot left out is kept empty on the
+ * model, for exporting a character without their weapons drawn, say.
+ * @returns {Set<number>}
+ */
+function live_sync_enabled_slots(core) {
+	const configured = core.view.config.chrLiveSyncSlots;
+	if (!Array.isArray(configured))
+		return new Set(LIVE_SYNC_SLOT_LABELS.map(slot => slot.id));
+
+	return new Set(configured.map(Number));
+}
+
 const live_sync = new LiveSync();
 
 // set while live sync applies equipment, so the watcher does not refresh a second time
@@ -2011,9 +2033,12 @@ async function apply_live_sync_payload(core, payload) {
 		return;
 	}
 
+	const enabled = live_sync_enabled_slots(core);
 	const equipment = {};
+
+	// a filtered-out slot is simply never written, which leaves it empty on the model
 	for (const [game_slot, item_id] of payload.items) {
-		if (item_id <= 0)
+		if (item_id <= 0 || !enabled.has(game_slot))
 			continue;
 
 		for (const slot_id of LIVE_SYNC_SLOT_MAP[game_slot] ?? [])
@@ -2571,6 +2596,19 @@ module.exports = {
 						</div>
 					</template>
 				</div>
+				<div v-if="$core.view.chrLiveSync" class="chr-live-sync-panel">
+					<div class="chr-live-sync-title">Live sync</div>
+					<div v-if="$core.view.chrLiveSyncStatus" class="chr-live-sync-status">{{ $core.view.chrLiveSyncStatus }}</div>
+					<div class="chr-live-sync-slots" title="Slots to take from the game. An unticked slot is left empty on the model">
+						<label v-for="slot in $core.view.chrLiveSyncSlotOptions" :key="slot.id" class="ui-checkbox">
+							<input type="checkbox" :value="slot.id" v-model="$core.view.config.chrLiveSyncSlots"/>
+							<span>{{ slot.label }}</span>
+						</label>
+					</div>
+					<div class="chr-live-sync-toggles">
+						<a @click="set_all_live_sync_slots(true)">All</a> / <a @click="set_all_live_sync_slots(false)">None</a>
+					</div>
+				</div>
 				<div class="chr-cust-controls">
 					<template v-if="!$core.view.chrShowGeosetControl">
 						<span class="chr-randomize-toggle" @click="randomize_customization">Randomize Customization</span>
@@ -2607,7 +2645,6 @@ module.exports = {
 									<input type="checkbox" v-model="$core.view.chrLiveSync"/>
 									<span>Live sync from game</span>
 								</label>
-								<span v-if="$core.view.chrLiveSyncStatus" class="chr-live-sync-status">{{ $core.view.chrLiveSyncStatus }}</span>
 								<label class="ui-checkbox" title="Export into a folder named after the character inside the export directory, instead of the model's game path">
 									<input type="checkbox" v-model="$core.view.config.chrExportToNamedFolder"/>
 									<span>Export to character folder</span>
@@ -2792,6 +2829,10 @@ module.exports = {
 
 		set_all_geosets(state) {
 			this.$core.view.setAllGeosets(state, this.$core.view.chrCustGeosets);
+		},
+
+		set_all_live_sync_slots(state) {
+			this.$core.view.config.chrLiveSyncSlots = state ? LIVE_SYNC_SLOT_LABELS.map(slot => slot.id) : [];
 		},
 
 		toggle_color_picker(option_id, event) {
@@ -3210,6 +3251,12 @@ module.exports = {
 					refresh_character_appearance(this.$core);
 			}, { deep: true }),
 			this.$core.view.$watch('chrLiveSync', enabled => set_live_sync(this.$core, enabled)),
+			this.$core.view.$watch('config.chrLiveSyncSlots', () => {
+				// the next frame means something different now, so do not wait for the
+				// game to change something before applying it
+				if (live_sync.is_running)
+					live_sync.resync();
+			}, { deep: true }),
 			this.$core.view.$watch('chrEquippedItemSkins', () => refresh_character_appearance(this.$core), { deep: true }),
 			this.$core.view.$watch('chrGuildTabardConfig', () => refresh_character_appearance(this.$core), { deep: true }),
 			this.$core.view.$watch('chrModelViewerAnimSelection', async selected_animation_id => {
@@ -3244,6 +3291,7 @@ module.exports = {
 			})
 		);
 
+		state.chrLiveSyncSlotOptions = LIVE_SYNC_SLOT_LABELS;
 		state.optionToChoices = DBCharacterCustomization.get_option_to_choices_map();
 
 		// trigger initial race/model load
