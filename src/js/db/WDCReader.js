@@ -158,7 +158,7 @@ class WDCReader {
 				continue;
 
 			const hasIDMap = section.idList.length > 0;
-			const emptyIDMap = hasIDMap && section.idList.every(id => id === 0);
+			const emptyIDMap = this._isEmptyIDMap(section);
 
 			for (let i = 0; i < header.recordCount; i++) {
 				let recordID;
@@ -589,6 +589,71 @@ class WDCReader {
 	}
 
 	/**
+	 * Whether a section's ID map is entirely zeroed, in which case a record's ID is
+	 * simply its index. Cached on the section: the check is O(recordCount) and the
+	 * callers below run per row.
+	 * @param {object} section
+	 * @returns {boolean}
+	 */
+	_isEmptyIDMap(section) {
+		if (section.emptyIDMap === undefined)
+			section.emptyIDMap = section.idList.length > 0 && section.idList.every(id => id === 0);
+
+		return section.emptyIDMap;
+	}
+
+	/**
+	 * Inline ID to record index for a section that carries no ID list, built once by
+	 * scanning the section. Without this, looking a row up by ID parses records from
+	 * the start of the section until the ID matches, so a loop fetching many rows
+	 * re-parses most of the table every time.
+	 * @param {number} sectionIndex
+	 * @returns {Map<number, number>}
+	 */
+	_getInlineIDIndex(sectionIndex) {
+		const section = this.sections[sectionIndex];
+		if (section.inlineIDIndex === undefined) {
+			const index = new Map();
+			for (let recordIndex = 0; recordIndex < section.header.recordCount; recordIndex++) {
+				const record = this._readRecordFromSection(sectionIndex, recordIndex, undefined);
+				if (record === null)
+					continue;
+
+				// first occurrence wins, matching the scan this replaces
+				const id = record[this.idField];
+				if (!index.has(id))
+					index.set(id, recordIndex);
+			}
+
+			section.inlineIDIndex = index;
+		}
+
+		return section.inlineIDIndex;
+	}
+
+	/**
+	 * Record ID to record index for a section, built once on first use.
+	 * Without this, looking a row up by ID scans the whole ID list, which turns
+	 * loops that fetch many rows by ID into quadratic work.
+	 * @param {object} section
+	 * @returns {Map<number, number>}
+	 */
+	_getIDIndex(section) {
+		if (section.idIndex === undefined) {
+			const index = new Map();
+			for (let i = 0; i < section.idList.length; i++) {
+				// first occurrence wins, matching indexOf()
+				if (!index.has(section.idList[i]))
+					index.set(section.idList[i], i);
+			}
+
+			section.idIndex = index;
+		}
+
+		return section.idIndex;
+	}
+
+	/**
 	 * Find which section contains a record ID
 	 * @param {number} recordID
 	 * @returns {object|null}
@@ -600,23 +665,21 @@ class WDCReader {
 				continue;
 
 			const hasIDMap = section.idList.length > 0;
-			const emptyIDMap = hasIDMap && section.idList.every(id => id === 0);
+			const emptyIDMap = this._isEmptyIDMap(section);
 
 			if (hasIDMap && !emptyIDMap) {
-				const recordIndex = section.idList.indexOf(recordID);
-				if (recordIndex !== -1)
+				const recordIndex = this._getIDIndex(section).get(recordID);
+				if (recordIndex !== undefined)
 					return { sectionIndex, recordIndex, recordID };
 			} else if (emptyIDMap) {
 				// for empty id maps, recordID equals recordIndex
 				if (recordID < section.header.recordCount)
 					return { sectionIndex, recordIndex: recordID, recordID };
 			} else {
-				// no id map - need to scan records for inline id field
-				for (let recordIndex = 0; recordIndex < section.header.recordCount; recordIndex++) {
-					const record = this._readRecordFromSection(sectionIndex, recordIndex, undefined);
-					if (record !== null && record[this.idField] === recordID)
-						return { sectionIndex, recordIndex, recordID };
-				}
+				// no id map - the id lives inline in the record, so use an index
+				const recordIndex = this._getInlineIDIndex(sectionIndex).get(recordID);
+				if (recordIndex !== undefined)
+					return { sectionIndex, recordIndex, recordID };
 			}
 		}
 
@@ -658,7 +721,7 @@ class WDCReader {
 			outsideDataSize += this.sections[i].recordDataSize;
 
 		const hasIDMap = section.idList.length > 0;
-		const emptyIDMap = hasIDMap && section.idList.every(id => id === 0);
+		const emptyIDMap = this._isEmptyIDMap(section);
 
 		if (hasIDMap && emptyIDMap)
 			recordID = recordIndex;
