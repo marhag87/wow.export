@@ -32,6 +32,7 @@ const DBItemList = require('../db/caches/DBItemList');
 const DBGuildTabard = require('../db/caches/DBGuildTabard');
 const DBCharacterCustomization = require('../db/caches/DBCharacterCustomization');
 const character_appearance = require('../ui/character-appearance');
+const { LiveSync } = require('../ui/live-sync');
 
 
 // geoset group constants (CG enum from DBItemGeosets)
@@ -274,6 +275,8 @@ function reset_module_state() {
 	for (const cleanup of watcher_cleanup_funcs)
 		cleanup();
 	watcher_cleanup_funcs = [];
+
+	live_sync.stop();
 }
 
 //endregion
@@ -1037,6 +1040,8 @@ async function update_model_selection(core) {
 	if (selected === undefined)
 		return;
 
+	disable_live_sync(core, 'the character changed');
+
 	log.write('Model selection changed to ID %d', selected.id);
 
 	const available_options = DBCharacterCustomization.get_options_for_model(selected.id);
@@ -1518,6 +1523,10 @@ async function load_saved_characters(core) {
 function set_current_character(core, character) {
 	core.view.chrCurrentCharacter = character ? { name: character.name, id: character.id } : null;
 	core.view.chrExportName = character?.name ?? '';
+
+	// reopened on the next launch, so live sync has the right character to dress.
+	// saves pass { name, id } rather than a listed character, so rebuild the name
+	core.view.config.chrLastCharacter = character ? (character.file_name ?? `${character.name}-${character.id}.json`) : '';
 }
 
 /**
@@ -1581,7 +1590,7 @@ async function delete_character(core, character) {
 
 	// the viewer keeps the character, but saving it again must create a new entry
 	if (core.view.chrCurrentCharacter?.id === character.id)
-		core.view.chrCurrentCharacter = null;
+		set_current_character(core, null);
 
 	core.setToast('success', `Character "${character.name}" deleted.`, null, 3000);
 }
@@ -1963,6 +1972,113 @@ function update_chr_race_list(core) {
 
 	if (core.view.chrCustRaceSelection.length == 0 || !listed_race_ids.includes(core.view.chrCustRaceSelection[0].id))
 		core.view.chrCustRaceSelection = [core.view.chrCustRacesPlayable[0]];
+}
+
+//endregion
+
+//region live sync
+// game inventory slot ID -> equipment slot IDs used by the viewer (shoulders fill both)
+const LIVE_SYNC_SLOT_MAP = {
+	1: [1], 3: [3, 30], 4: [4], 5: [5], 6: [6], 7: [7], 8: [8],
+	9: [9], 10: [10], 15: [15], 16: [16], 17: [17], 19: [19]
+};
+
+const live_sync = new LiveSync();
+
+// set while live sync applies equipment, so the watcher does not refresh a second time
+let live_sync_applying = false;
+
+function live_sync_status(core, text) {
+	core.view.chrLiveSyncStatus = text;
+}
+
+/**
+ * Apply equipment read from the game and export, one change at a time: a burst of
+ * gear swaps must not start an export while the previous one is still running.
+ */
+let live_sync_queue = Promise.resolve();
+
+function on_live_sync_payload(core, payload) {
+	live_sync_queue = live_sync_queue.then(() => apply_live_sync_payload(core, payload)).catch(e => {
+		log.write('live sync failed: %s', e.message);
+		live_sync_status(core, 'failed: ' + e.message);
+	});
+}
+
+async function apply_live_sync_payload(core, payload) {
+	if (!active_renderer) {
+		live_sync_status(core, 'no character loaded');
+		return;
+	}
+
+	const equipment = {};
+	for (const [game_slot, item_id] of payload.items) {
+		if (item_id <= 0)
+			continue;
+
+		for (const slot_id of LIVE_SYNC_SLOT_MAP[game_slot] ?? [])
+			equipment[slot_id] = item_id;
+	}
+
+	const current = core.view.chrEquippedItems ?? {};
+	const keys = new Set([...Object.keys(current), ...Object.keys(equipment)]);
+	const changed = [...keys].some(slot_id => current[slot_id] !== equipment[slot_id]);
+
+	if (!changed) {
+		live_sync_status(core, util.format('in sync (change %d)', payload.counter));
+		return;
+	}
+
+	log.write('Live sync applying equipment from change %d', payload.counter);
+	live_sync_status(core, util.format('applying change %d...', payload.counter));
+
+	live_sync_applying = true;
+	try {
+		core.view.chrEquippedItems = equipment;
+		core.view.chrEquippedItemSkins = {};
+		await refresh_character_appearance(core);
+	} finally {
+		// let the watcher's own tick pass before it is allowed to refresh again
+		await new Promise(resolve => setTimeout(resolve, 0));
+		live_sync_applying = false;
+	}
+
+	live_sync_status(core, util.format('exporting change %d...', payload.counter));
+	await export_char_model(core);
+	live_sync_status(core, util.format('exported change %d', payload.counter));
+}
+
+/**
+ * Switch live sync off, since it dresses whichever character is loaded and the
+ * gear from the game does not belong on a different one.
+ */
+function disable_live_sync(core, reason) {
+	if (!core.view.chrLiveSync)
+		return;
+
+	core.view.chrLiveSync = false;
+	live_sync_status(core, 'stopped: ' + reason);
+	log.write('Live sync stopped: %s', reason);
+}
+
+async function set_live_sync(core, enabled) {
+	if (!enabled) {
+		live_sync.stop();
+		live_sync_status(core, '');
+		return;
+	}
+
+	try {
+		live_sync.start(
+			core.view.config.chrLiveSyncIntervalMs,
+			payload => on_live_sync_payload(core, payload),
+			text => live_sync_status(core, text)
+		);
+	} catch (e) {
+		log.write('live sync could not start: %s', e.message);
+		live_sync_status(core, 'could not start: ' + e.message);
+		core.view.chrLiveSync = false;
+	}
 }
 
 //endregion
@@ -2487,6 +2603,11 @@ module.exports = {
 								<span>Apply pose</span>
 							</label>
 							<template v-if="$core.view.config.exportCharacterFormat !== 'PNG' && $core.view.config.exportCharacterFormat !== 'CLIPBOARD'">
+								<label class="ui-checkbox" title="Read equipped gear from the running game (needs the WoWExportLiveSync addon) and export on every change">
+									<input type="checkbox" v-model="$core.view.chrLiveSync"/>
+									<span>Live sync from game</span>
+								</label>
+								<span v-if="$core.view.chrLiveSyncStatus" class="chr-live-sync-status">{{ $core.view.chrLiveSyncStatus }}</span>
 								<label class="ui-checkbox" title="Export into a folder named after the character inside the export directory, instead of the model's game path">
 									<input type="checkbox" v-model="$core.view.config.chrExportToNamedFolder"/>
 									<span>Export to character folder</span>
@@ -3084,7 +3205,11 @@ module.exports = {
 			this.$core.view.$watch('chrCustOptionSelection', () => update_customization_type(this.$core), { deep: true }),
 			this.$core.view.$watch('chrCustChoiceSelection', () => update_customization_choice(this.$core), { deep: true }),
 			this.$core.view.$watch('chrCustActiveChoices', () => refresh_character_appearance(this.$core), { deep: true }),
-			this.$core.view.$watch('chrEquippedItems', () => refresh_character_appearance(this.$core), { deep: true }),
+			this.$core.view.$watch('chrEquippedItems', () => {
+				if (!live_sync_applying)
+					refresh_character_appearance(this.$core);
+			}, { deep: true }),
+			this.$core.view.$watch('chrLiveSync', enabled => set_live_sync(this.$core, enabled)),
 			this.$core.view.$watch('chrEquippedItemSkins', () => refresh_character_appearance(this.$core), { deep: true }),
 			this.$core.view.$watch('chrGuildTabardConfig', () => refresh_character_appearance(this.$core), { deep: true }),
 			this.$core.view.$watch('chrModelViewerAnimSelection', async selected_animation_id => {
@@ -3123,6 +3248,18 @@ module.exports = {
 
 		// trigger initial race/model load
 		update_chr_race_list(this.$core);
+
+		// reopen the character that was open last time, rather than the default model
+		const last_character = this.$core.view.config.chrLastCharacter;
+		if (last_character) {
+			await load_saved_characters(this.$core);
+			const character = this.$core.view.chrSavedCharacters.find(c => c.file_name === last_character);
+
+			if (character)
+				await load_character(this.$core, character);
+			else
+				log.write('Saved character %s is gone, keeping the default model', last_character);
+		}
 
 		this.$core.hideLoadingScreen();
 

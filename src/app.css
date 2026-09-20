@@ -3541,6 +3541,12 @@ input[type=number]::-webkit-outer-spin-button {
 	margin-top: 5px;
 }
 
+.chr-live-sync-status {
+	font-size: 0.85em;
+	color: var(--font-secondary, #aaa);
+	max-width: 260px;
+}
+
 /* fill the panel width without widening it (overrides the global 300px text input width) */
 .character-export-menu input[type=text].chr-export-name {
 	width: auto;

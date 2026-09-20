@@ -88,6 +88,8 @@
 	"chrExportApplyPose": true,
 	"chrExportToNamedFolder": false,
 	"chrExportFaceForward": false,
+	"chrLastCharacter": "",
+	"chrLiveSyncIntervalMs": 1000,
 	"modelsExportApplyPose": true,
 	"modelsExportWithBonePrefix": true,
 	"soundPlayerVolume": 0.7,

@@ -1,0 +1,7 @@
+## Interface: 11507
+## Title: wow.export Live Sync
+## Notes: Encodes equipped item IDs as an on-screen pixel strip for wow.export to read.
+## Version: 0.1
+## SavedVariables: WoWExportLiveSyncDB
+
+WoWExportLiveSync.lua
