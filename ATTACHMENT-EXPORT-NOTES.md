@@ -288,6 +288,32 @@ Fixed in commit `e849d4f9`:
 Verified in the viewer on the Troll with Flimsy Chain Cloak. Not covered: the
 creatures tab, where NPC cloaks may still show the placeholder.
 
+### 11. Customization choices leave the geoset they replace showing — FIXED, VERIFIED
+
+Symptom: an Undead's "Cheeky Slackjaw" rendered a slackjaw and a closed mouth
+at the same time. Unticking `FacialA1` in Custom Geoset Control fixed it by
+hand.
+
+Not the same as #7, which was the show side — a choice with several geoset
+elements applying only one of them. This is the hide side.
+
+Root cause: the reset in `apply_customization_geosets` enables every geoset
+whose id ends in `01`, which is how a group's default is turned on. The hide
+set only holds geosets that some choice of an active option references by
+element row, and a choice's plain variant usually has no element row at all —
+there is nothing to reference. So `FacialA1` (geoset 101) was never hidden and
+drew underneath the slackjaw geoset from the same group.
+
+Fixed in commit `c4628088`: once a choice shows a geoset, every other geoset in
+that group is hidden. `update_geosets` already applies exactly this rule to
+equipment geosets — hide `base+1 .. base+99`, then show the one — so
+customization was the odd one out rather than this being a new convention.
+
+Shared with `tab_creatures.js`, so NPC customization geosets change too.
+Verified on an Undead (the slackjaw) and a Tauren, whose beard, ears and nose
+rings sit in three different groups and so are the case most likely to expose
+an over-eager hide. Both correct.
+
 ## Features added
 
 ### Export characters to a named folder (commit 1a452efe)
