@@ -93,6 +93,16 @@ class CharMaterialRenderer {
 	constructor(textureLayer, width, height) {
 		this.textureTargets = [];
 
+		// what this material last handed to the GPU, and to which renderer
+		this.uploaded_signature = null;
+		this.uploaded_renderer = null;
+
+		// source textures bound into this context, by file. A refresh re-adds the
+		// same ones, and they used to be uploaded again every time and never
+		// deleted - a cost per refresh and a leak until the context went away.
+		this.source_textures = new Map();
+		this.override_textures = [];
+
 		const canvas = document.createElement('canvas');
 		canvas.id = 'charMaterialCanvas-' + textureLayer;
 
@@ -124,6 +134,37 @@ class CharMaterialRenderer {
 	}
 
 	/**
+	 * A key describing what this material composites to, used to tell whether the
+	 * result needs handing to the GPU again. Reading 8MB back off the GPU and
+	 * uploading it is the bulk of a character refresh, and most materials are
+	 * untouched by any one change - picking a face leaves the rest alone.
+	 *
+	 * Returns null when the answer cannot be known, which counts as changed: a baked
+	 * NPC texture is supplied as raw pixels, so nothing here identifies its content.
+	 * @returns {string|null}
+	 */
+	getCompositeSignature() {
+		const parts = [];
+
+		for (const layer of this.textureTargets) {
+			if (layer.custMaterial.FileDataID === 0)
+				return null;
+
+			parts.push([
+				layer.id, layer.custMaterial.FileDataID, layer.textureLayer.BlendMode,
+				layer.section.X, layer.section.Y, layer.section.Width, layer.section.Height
+			].join(':'));
+		}
+
+		// added in whatever order the caller found them, so sort for a stable key
+		parts.sort();
+
+		// update() drops the base clothing layers when this is off
+		parts.push('clothing=' + (core.view.config.chrIncludeBaseClothing ? 1 : 0));
+		return parts.join(',');
+	}
+
+	/**
 	 * Get raw pixel data from WebGL framebuffer.
 	 * Returns Uint8Array of RGBA pixels, avoiding canvas alpha premultiplication.
 	 */
@@ -134,18 +175,13 @@ class CharMaterialRenderer {
 
 		this.gl.readPixels(0, 0, width, height, this.gl.RGBA, this.gl.UNSIGNED_BYTE, pixels);
 
-		// flip y-axis since gl.readPixels returns bottom-up
+		// flip y-axis since gl.readPixels returns bottom-up. A row at a time, not a
+		// pixel at a time: these materials run to 2048 square, so a per-pixel loop is
+		// millions of iterations on the thread the animation is drawn on.
 		const flipped = new Uint8Array(width * height * 4);
-		for (let y = 0; y < height; y++) {
-			for (let x = 0; x < width; x++) {
-				const src_idx = (y * width + x) * 4;
-				const dst_idx = ((height - y - 1) * width + x) * 4;
-				flipped[dst_idx] = pixels[src_idx];
-				flipped[dst_idx + 1] = pixels[src_idx + 1];
-				flipped[dst_idx + 2] = pixels[src_idx + 2];
-				flipped[dst_idx + 3] = pixels[src_idx + 3];
-			}
-		}
+		const stride = width * 4;
+		for (let y = 0; y < height; y++)
+			flipped.set(pixels.subarray(y * stride, (y + 1) * stride), (height - y - 1) * stride);
 
 		return flipped;
 	}
@@ -217,6 +253,15 @@ class CharMaterialRenderer {
 	dispose() {
 		this.unbindAllTextures();
 
+		for (const texture of this.source_textures.values())
+			this.gl.deleteTexture(texture);
+
+		for (const texture of this.override_textures)
+			this.gl.deleteTexture(texture);
+
+		this.source_textures.clear();
+		this.override_textures = [];
+
 		if (this.glShaderProg) {
 			this.gl.deleteProgram(this.glShaderProg);
 			this.glShaderProg = null;
@@ -236,11 +281,18 @@ class CharMaterialRenderer {
 	 * @param {boolean} useAlpha
 	 */
 	async loadTexture(fileDataID, useAlpha = true) {
+		const key = fileDataID + (useAlpha ? '-a' : '-o');
+		const existing = this.source_textures.get(key);
+		if (existing !== undefined)
+			return existing;
+
 		const texture = this.gl.createTexture();
 
 		// TODO: DXT(1/3/5) support
 		const blp = await get_decoded_texture(fileDataID, useAlpha);
 		const blpData = blp.data;
+
+		this.source_textures.set(key, texture);
 
 		this.gl.activeTexture(this.gl.TEXTURE0);
 		this.gl.bindTexture(this.gl.TEXTURE_2D, texture);
@@ -252,17 +304,18 @@ class CharMaterialRenderer {
 	}
 
 	async loadTextureFromBLP(blp, useAlpha = true) {
-		console.log('loadtexturefromblp called with blp:', blp, 'width:', blp.width, 'height:', blp.height);
 		const texture = this.gl.createTexture();
 		const blpData = blp.toUInt8Array(0, useAlpha? 0b1111 : 0b0111);
-		console.log('blp data length:', blpData.length, 'expected:', blp.width * blp.height * 4);
+
+		// cannot be keyed by file, so it is tracked only so dispose() can free it
+		this.override_textures.push(texture);
+
 		this.gl.activeTexture(this.gl.TEXTURE0);
 		this.gl.bindTexture(this.gl.TEXTURE_2D, texture);
 		this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, blp.width, blp.height, 0, this.gl.RGBA, this.gl.UNSIGNED_BYTE, blpData);
 		this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_S, this.gl.REPEAT);
 		this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_WRAP_T, this.gl.REPEAT);
 		this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, this.gl.NEAREST);
-		console.log('texture created successfully:', texture);
 		return texture;
 	}
 

@@ -315,12 +315,24 @@ async function refresh_character_appearance(core) {
 
 	log.write('Refreshing character appearance...');
 
+	// timed per phase: this all runs on the thread that draws the viewport, so
+	// anything slow here shows up as the animation stalling
+	const started = performance.now();
 	update_geosets(core);
+
+	const geosets_done = performance.now();
 	await update_textures(core);
+
+	const textures_done = performance.now();
 	await update_skinned_models(core);
+
+	const skinned_done = performance.now();
 	await update_equipment_models(core);
 
-	log.write('Character appearance refresh complete');
+	const equipment_done = performance.now();
+	log.write('Character appearance refresh complete (geosets %dms, textures %dms, skinned %dms, equipment %dms)',
+		Math.round(geosets_done - started), Math.round(textures_done - geosets_done),
+		Math.round(skinned_done - textures_done), Math.round(equipment_done - skinned_done));
 }
 
 async function check_cond_model_swap(core) {

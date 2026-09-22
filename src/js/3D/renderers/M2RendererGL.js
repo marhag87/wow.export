@@ -1697,10 +1697,13 @@ class M2RendererGL {
 	 */
 	async overrideTextureTypeWithPixels(type, width, height, pixels) {
 		const textureTypes = this.m2.textureTypes;
+		let uploads = 0;
 
 		for (let i = 0; i < textureTypes.length; i++) {
 			if (textureTypes[i] !== type)
 				continue;
+
+			uploads++;
 
 			const gl_tex = new GLTexture(this.ctx);
 			gl_tex.set_rgba(pixels, width, height, {
@@ -1714,6 +1717,8 @@ class M2RendererGL {
 
 			this.textures.set(i, gl_tex);
 		}
+
+		return uploads;
 	}
 
 	/**

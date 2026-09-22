@@ -3,6 +3,7 @@
 	Authors: Kruithne <kruithne@gmail.com>
 	License: MIT
  */
+const log = require('../log');
 const CharMaterialRenderer = require('../3D/renderers/CharMaterialRenderer');
 const DBCharacterCustomization = require('../db/caches/DBCharacterCustomization');
 
@@ -201,19 +202,47 @@ async function apply_customization_textures(renderer, active_choices, layout_id,
 
 /**
  * Upload all chr_materials to the GPU via the renderer.
+ *
+ * Each material is always recomposited, since its canvas is what the texture
+ * preview and texture export read, but one whose composite is unchanged since it
+ * last went to the GPU is not read back and uploaded again. That pair costs about
+ * 8MB each way per material and is the bulk of a refresh.
+ *
  * @param {object} renderer - M2 renderer instance
  * @param {Map} chr_materials - Map of texture_type -> CharMaterialRenderer
  */
 async function upload_textures_to_gpu(renderer, chr_materials) {
 	for (const [chr_model_texture_target, chr_material] of chr_materials) {
+		const material_started = performance.now();
 		await chr_material.update();
+
+		// a new renderer holds none of our textures, whatever was uploaded before
+		const signature = chr_material.getCompositeSignature();
+		if (signature !== null && chr_material.uploaded_signature === signature && chr_material.uploaded_renderer === renderer)
+			continue;
+
+		const composited = performance.now();
 		const pixels = chr_material.getRawPixels();
-		await renderer.overrideTextureTypeWithPixels(
+
+		const read_back = performance.now();
+		const uploads = await renderer.overrideTextureTypeWithPixels(
 			chr_model_texture_target,
 			chr_material.glCanvas.width,
 			chr_material.glCanvas.height,
 			pixels
 		);
+
+		// only when it is worth knowing about, so a refresh stays one log line
+		const material_ms = performance.now() - material_started;
+		if (material_ms > 30) {
+			log.write('Material %d (%dx%d): %dms composite, %dms read back, %dms upload to %d slot(s)',
+				chr_model_texture_target, chr_material.glCanvas.width, chr_material.glCanvas.height,
+				Math.round(composited - material_started), Math.round(read_back - composited),
+				Math.round(performance.now() - read_back), uploads);
+		}
+
+		chr_material.uploaded_signature = signature;
+		chr_material.uploaded_renderer = renderer;
 	}
 }
 
