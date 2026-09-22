@@ -541,6 +541,62 @@ Customization links, not in the export panel: 13 of them there made the panel
 tall enough to cover the equipment slots and Clear All Equipment behind it, and
 collapsing the list behind a summary line still cost two lines of height.
 
+## Standard and high definition models (commit 7b6b072f)
+
+Clients that ship both model sets - Classic Forever (`wow_classic_beta`,
+1.60.1.69913) does - point `ChrRaceXChrModel` only at the high definition
+models. The tab therefore always loaded those: the log shows
+`character/tauren/male/taurenmale_hd.m2` with no way to ask for the classic one.
+
+The standard definition models are present as `ChrModel` rows nothing
+references. Of 127 rows only 90 distinct ones are reachable through
+`ChrRaceXChrModel`; 18 of the orphans share `CharComponentTextureLayoutID` 203
+in nine male/female pairs, with the vanilla player display IDs (49/50 Human,
+51/52 Orc, 53/54 Dwarf, 55/56 Night Elf, 57/58 Undead, 59/60 Tauren, 1563/1564
+Gnome, 1478/1479 Troll, plus 146599/146600). Each carries its own texture
+layout, its own `SkeletonFileDataID` and 5-7 customization options of its own -
+SD Tauren male has Face, Horn Style, Facial Hair, Skin Color, Horn Color, Nose
+Ring and Hair, where the HD model has Rune, Tattoo, Eye Color and the rest.
+
+So these are complete definitions, not loose files, which is what makes the
+feature worth having: **nothing** links a pair in the tables, so they are
+matched through the model file itself - the high definition path is the standard
+one with an `_hd` suffix, resolved via `DBCreatures.getFileDataIDByDisplayID`
+and `listfile.getByID`. Picking SD swaps the selected `ChrModel` outright, so
+its layout, geosets and options follow automatically. Swapping only the model
+*file* was rejected: SD and HD share neither geoset numbering nor texture
+layout, so the silhouette would have been right and the textures wrong.
+
+The dropdown ("Character Model", HD/SD, matching the in-game option's wording)
+sits below Body and appears only for races that have both, so other clients see
+no change. `chrModelDefinition` persists it.
+
+Two crashes found through this, neither specific to it:
+
+1. `get_current_race_gender` worked out race and gender by matching the selected
+   model against `ChrRaceXChrModel`, so an SD selection returned `null`.
+   Everything keyed on race and gender then lost its input: item component
+   textures resolved to `null` and threw
+   (`fileDataID does not exist in root: null`), and helmet hide geosets, item
+   display variants, shoulder positions and bare-feet detection would all have
+   been wrong. It now matches an SD model through its pairing.
+2. `get_textures_by_display_id` reported a component whose race/gender variant
+   did not resolve as having a `null` file, so callers asked CASC for a null file
+   and aborted the whole model. Those are skipped now, as is a customization
+   material that resolves to no texture (a choice that clears one, or a material
+   resource the client does not ship).
+
+**Known slowness, not caused by this.** A character appearance refresh takes ~5s
+on HD and ~9s on SD on this client, and it is not downloading: 6 CDN fetches
+against 132 cache hits in the session, none during a slow refresh. Textures load
+at a steady ~0.25s each on HD and ~0.5s on SD, the difference being that SD
+assets are absent from the local install so each read goes through the app cache
+(read plus SHA-1 verify) rather than `Data/data`; 90KB files cannot account for
+half a second, so the real cost is further on, in BLP decode and the
+`CharMaterialRenderer` composite. Worse, one interaction triggers 2-4 full
+refreshes from separate deep watchers - two overlapping refreshes took 18s, three
+took 36s.
+
 ## Startup performance: DB2 row lookups (commit 56571141)
 
 Opening the Characters tab took ~25s on a warm cache. Nothing was being
@@ -716,7 +772,8 @@ it).
   `e849d4f9` (cloak textures), `8e43c888` (live sync), `56571141` (indexed
   DB2 row lookups), `27282234` (smaller live sync strip), `78c1eb36` (one pixel
   per block), `665f44a0` (bun lockfile refresh) and `18f70350` (live sync slot
-  filter) pushed to `origin/main`.
+  filter) pushed to `origin/main`. `7b6b072f` (standard/high definition models)
+  is committed locally but not yet pushed.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
