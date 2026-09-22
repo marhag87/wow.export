@@ -33,6 +33,7 @@ const DBGuildTabard = require('../db/caches/DBGuildTabard');
 const DBCharacterCustomization = require('../db/caches/DBCharacterCustomization');
 const character_appearance = require('../ui/character-appearance');
 const { LiveSync } = require('../ui/live-sync');
+const { Coalescer } = require('../ui/coalescer');
 
 
 // geoset group constants (CG enum from DBItemGeosets)
@@ -275,6 +276,8 @@ function reset_module_state() {
 	}
 	active_model = undefined;
 
+	cancel_pending_refresh();
+
 	for (const cleanup of watcher_cleanup_funcs)
 		cleanup();
 	watcher_cleanup_funcs = [];
@@ -285,6 +288,23 @@ function reset_module_state() {
 //endregion
 
 //region appearance
+
+// A refresh recomposes every character texture, which costs a few seconds on a
+// large model. One interaction usually touches several pieces of watched state -
+// choosing a customization can move the active choices, the equipment and the
+// skins - and each watcher used to start its own full refresh, so a single change
+// ran two to four of them, overlapping.
+const appearance_refresh = new Coalescer(core => refresh_character_appearance(core));
+
+/**
+ * Ask for an appearance refresh, sharing one with any other request made at about
+ * the same time. Pass immediate for a caller that is about to act on the result.
+ * @returns {Promise} resolves when a refresh covering this request has finished
+ */
+const request_character_refresh = (core, immediate = false) => appearance_refresh.request(core, immediate);
+
+const cancel_pending_refresh = () => appearance_refresh.cancel();
+
 async function refresh_character_appearance(core) {
 	if (!active_renderer || is_importing)
 		return;
@@ -537,7 +557,7 @@ async function update_textures(core) {
 						FileDataID: texture.fileDataID
 					};
 
-					await chr_material.setTextureTarget(item_material, section, chr_model_material, item_layer, true);
+					await chr_material.setTextureTarget(item_material, section, chr_model_material, item_layer, true, null, true);
 				}
 			}
 
@@ -595,7 +615,7 @@ async function update_textures(core) {
 
 					// override BlendMode on the layer for guild tabard composition
 					const tabard_texture_layer = { ...layer, BlendMode: tl.blend_mode };
-					await chr_material.setTextureTarget(item_material, section, chr_model_material, tabard_texture_layer, true);
+					await chr_material.setTextureTarget(item_material, section, chr_model_material, tabard_texture_layer, true, null, true);
 				}
 			}
 		}
@@ -949,7 +969,9 @@ async function load_character_model(core, file_data_id) {
 		if (!has_content)
 			core.setToast('info', util.format('The model %s doesn\'t have any 3D data associated with it.', file_data_id), null, 4000);
 
-		// refresh appearance after model is fully loaded
+		// Direct, not through request_character_refresh: a refresh can swap the model
+		// (check_cond_model_swap) and so re-enter this function, and the scheduler
+		// would make that inner call wait for the outer refresh it is running inside.
 		await refresh_character_appearance(core);
 
 	} catch (e) {
@@ -2076,7 +2098,7 @@ async function apply_live_sync_payload(core, payload) {
 	try {
 		core.view.chrEquippedItems = equipment;
 		core.view.chrEquippedItemSkins = {};
-		await refresh_character_appearance(core);
+		await request_character_refresh(core, true);
 	} finally {
 		// let the watcher's own tick pass before it is allowed to refresh again
 		await new Promise(resolve => setTimeout(resolve, 0));
@@ -2886,7 +2908,7 @@ module.exports = {
 
 		async remove_baked_npc_texture() {
 			this.$core.view.chrCustBakedNPCTexture = null;
-			await refresh_character_appearance(this.$core);
+			await request_character_refresh(this.$core, true);
 		},
 
 		async open_saved_characters() {
@@ -3262,17 +3284,17 @@ module.exports = {
 
 		// simplified watchers - no isBusy checks, proper async handling
 		watcher_cleanup_funcs.push(
-			this.$core.view.$watch('config.chrIncludeBaseClothing', () => refresh_character_appearance(this.$core)),
-			this.$core.view.$watch('config.chrIsDemonHunter', () => refresh_character_appearance(this.$core)),
+			this.$core.view.$watch('config.chrIncludeBaseClothing', () => request_character_refresh(this.$core)),
+			this.$core.view.$watch('config.chrIsDemonHunter', () => request_character_refresh(this.$core)),
 			this.$core.view.$watch('chrCustRaceSelection', () => update_chr_model_list(this.$core)),
 			this.$core.view.$watch('config.chrModelDefinition', () => update_chr_model_list(this.$core)),
 			this.$core.view.$watch('chrCustModelSelection', () => update_model_selection(this.$core), { deep: true }),
 			this.$core.view.$watch('chrCustOptionSelection', () => update_customization_type(this.$core), { deep: true }),
 			this.$core.view.$watch('chrCustChoiceSelection', () => update_customization_choice(this.$core), { deep: true }),
-			this.$core.view.$watch('chrCustActiveChoices', () => refresh_character_appearance(this.$core), { deep: true }),
+			this.$core.view.$watch('chrCustActiveChoices', () => request_character_refresh(this.$core), { deep: true }),
 			this.$core.view.$watch('chrEquippedItems', () => {
 				if (!live_sync_applying)
-					refresh_character_appearance(this.$core);
+					request_character_refresh(this.$core);
 			}, { deep: true }),
 			this.$core.view.$watch('chrLiveSync', enabled => set_live_sync(this.$core, enabled)),
 			this.$core.view.$watch('config.chrLiveSyncSlots', () => {
@@ -3281,8 +3303,8 @@ module.exports = {
 				if (live_sync.is_running)
 					live_sync.resync();
 			}, { deep: true }),
-			this.$core.view.$watch('chrEquippedItemSkins', () => refresh_character_appearance(this.$core), { deep: true }),
-			this.$core.view.$watch('chrGuildTabardConfig', () => refresh_character_appearance(this.$core), { deep: true }),
+			this.$core.view.$watch('chrEquippedItemSkins', () => request_character_refresh(this.$core), { deep: true }),
+			this.$core.view.$watch('chrGuildTabardConfig', () => request_character_refresh(this.$core), { deep: true }),
 			this.$core.view.$watch('chrModelViewerAnimSelection', async selected_animation_id => {
 				if (!active_renderer || !active_renderer.playAnimation || this.$core.view.chrModelViewerAnims.length === 0)
 					return;

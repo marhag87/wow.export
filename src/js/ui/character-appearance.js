@@ -191,7 +191,8 @@ async function apply_customization_textures(renderer, active_choices, layout_id,
 			if (char_component_texture_section === undefined)
 				continue;
 
-			await chr_material.setTextureTarget(chr_cust_mat, char_component_texture_section, chr_model_material, chr_model_texture_layer, true);
+			// composited once by upload_textures_to_gpu
+			await chr_material.setTextureTarget(chr_cust_mat, char_component_texture_section, chr_model_material, chr_model_texture_layer, true, null, true);
 		}
 	}
 

@@ -11,6 +11,71 @@ const overlay = require('../../ui/char-texture-overlay');
 const PNGWriter = require('../../png-writer');
 const Shaders = require('../Shaders');
 
+// Decoded character textures, shared by every material renderer.
+//
+// Recomposing a character reloads every texture that makes it up, so changing one
+// customization re-read and re-decoded all of them - about 16 files for a dressed
+// character, at a quarter of a second each, when only one had changed. The decoded
+// pixels are kept here instead. GL textures cannot be shared, since each renderer
+// owns its own context, but uploading pixels already in memory is cheap.
+const TEXTURE_CACHE_BUDGET = 128 * 1024 * 1024;
+
+const texture_cache = new Map();
+let texture_cache_bytes = 0;
+
+/**
+ * Decode a texture, or return the pixels decoded earlier.
+ * @param {number} fileDataID
+ * @param {boolean} useAlpha
+ * @returns {Promise<{width: number, height: number, data: Uint8Array}>}
+ */
+async function get_decoded_texture(fileDataID, useAlpha) {
+	const key = fileDataID + (useAlpha ? '-a' : '-o');
+	const cached = texture_cache.get(key);
+
+	if (cached !== undefined) {
+		// re-insert so the map stays in least-recently-used order
+		texture_cache.delete(key);
+		texture_cache.set(key, cached);
+		return cached;
+	}
+
+	const started = performance.now();
+	const file = await core.view.casc.getFile(fileDataID);
+	const read_ms = performance.now() - started;
+
+	const blp = new BLPFile(file);
+	const entry = {
+		width: blp.width,
+		height: blp.height,
+		data: blp.toUInt8Array(0, useAlpha ? 0b1111 : 0b0111)
+	};
+
+	const total_ms = performance.now() - started;
+	if (total_ms > 50)
+		log.write('Slow character texture %d: %dms read, %dms decode', fileDataID, Math.round(read_ms), Math.round(total_ms - read_ms));
+
+	texture_cache.set(key, entry);
+	texture_cache_bytes += entry.data.byteLength;
+
+	// drop the least recently used entries once over budget
+	for (const [old_key, old_entry] of texture_cache) {
+		if (texture_cache_bytes <= TEXTURE_CACHE_BUDGET || old_key === key)
+			break;
+
+		texture_cache.delete(old_key);
+		texture_cache_bytes -= old_entry.data.byteLength;
+	}
+
+	return entry;
+}
+
+// file data IDs are per build, so nothing may outlive a change of source
+core.events.on('casc-source-changed', () => {
+	texture_cache.clear();
+	texture_cache_bytes = 0;
+});
+
 const UV_BUFFER_DATA = new Float32Array([
 	0, 1,
 	1, 1,
@@ -111,16 +176,15 @@ class CharMaterialRenderer {
 	/**
 	 * Loads a specific texture to a target.
 	 */
-	async setTextureTarget(chrCustomizationMaterial, charComponentTextureSection, chrModelMaterial, chrModelTextureLayer, useAlpha = true, blpOverride = null) {
+	async setTextureTarget(chrCustomizationMaterial, charComponentTextureSection, chrModelMaterial, chrModelTextureLayer, useAlpha = true, blpOverride = null, deferUpdate = false) {
 
 		// CharComponentTextureSection: SectionType, X, Y, Width, Height, OverlapSectionMask
 		// ChrModelTextureLayer: TextureType, Layer, Flags, BlendMode, TextureSectionTypeBitMask, TextureSectionTypeBitMask2, ChrModelTextureTargetID[2]
 		// ChrModelMaterial: TextureType, Width, Height, Flags, Unk
 		// ChrCustomizationMaterial: ChrModelTextureTargetID, FileDataID (this is actually MaterialResourceID but we translate it before here)
 
-		// For debug purposes
+		// kept for the texture overlay, which names each layer
 		let filename = listfile.getByID(chrCustomizationMaterial.FileDataID);
-		console.log("Loading texture " + filename + " for target " + chrCustomizationMaterial.ChrModelTextureTargetID + " with alpha " + useAlpha);
 
 		let textureID;
 		if (blpOverride) {
@@ -140,7 +204,11 @@ class CharMaterialRenderer {
 			filename: filename
 		});
 
-		await this.update();
+		// update() redraws every target it has been given, so calling it per texture
+		// makes composing a character quadratic. A caller adding several in a row
+		// passes deferUpdate and composites once at the end.
+		if (!deferUpdate)
+			await this.update();
 	}
 
 	/**
@@ -169,14 +237,11 @@ class CharMaterialRenderer {
 	 */
 	async loadTexture(fileDataID, useAlpha = true) {
 		const texture = this.gl.createTexture();
-		const blp = new BLPFile(await core.view.casc.getFile(fileDataID));
 
 		// TODO: DXT(1/3/5) support
+		const blp = await get_decoded_texture(fileDataID, useAlpha);
+		const blpData = blp.data;
 
-		// For unknown reasons, we have to store blpData as a variable. Inlining it into the
-		// parameter list causes issues, despite it being synchronous.
-
-		const blpData = blp.toUInt8Array(0, useAlpha? 0b1111 : 0b0111);
 		this.gl.activeTexture(this.gl.TEXTURE0);
 		this.gl.bindTexture(this.gl.TEXTURE_2D, texture);
 		this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, blp.width, blp.height, 0, this.gl.RGBA, this.gl.UNSIGNED_BYTE, blpData);
@@ -304,8 +369,6 @@ class CharMaterialRenderer {
 			
 			const sectionBottomRightX = (layer.section.X + layer.section.Width - materialMiddleX) / materialMiddleX;
 			const sectionBottomRightY = (layer.section.Y - materialMiddleY) / materialMiddleY * -1;
-
-			console.log("[" + layer.material.TextureType + "] Placing texture " + layer.filename + " of blend mode " + layer.textureLayer.BlendMode + " for target " + layer.id + " with offset " + layer.section.X + "x" + layer.section.Y + " of size " + layer.section.Width + "x" + layer.section.Height + " at " + sectionTopLeftX + ", " + sectionTopLeftY + " to " + sectionBottomRightX + ", " + sectionBottomRightY);
 
 			// Vertex buffer
 			const vBuffer = this.gl.createBuffer();
