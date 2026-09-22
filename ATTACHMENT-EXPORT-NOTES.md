@@ -586,16 +586,57 @@ Two crashes found through this, neither specific to it:
    material that resolves to no texture (a choice that clears one, or a material
    resource the client does not ship).
 
-**Known slowness, not caused by this.** A character appearance refresh takes ~5s
-on HD and ~9s on SD on this client, and it is not downloading: 6 CDN fetches
-against 132 cache hits in the session, none during a slow refresh. Textures load
-at a steady ~0.25s each on HD and ~0.5s on SD, the difference being that SD
-assets are absent from the local install so each read goes through the app cache
-(read plus SHA-1 verify) rather than `Data/data`; 90KB files cannot account for
-half a second, so the real cost is further on, in BLP decode and the
-`CharMaterialRenderer` composite. Worse, one interaction triggers 2-4 full
-refreshes from separate deep watchers - two overlapping refreshes took 18s, three
-took 36s.
+**Slowness found while testing this, fixed separately in commit 02dec3a8** - see
+"Appearance refresh cost" below. It was not caused by SD: HD was slow too.
+
+## Appearance refresh cost (commit 02dec3a8)
+
+Changing one customization on the Classic Forever client took **18-36 seconds**.
+It was never downloading: 6 CDN fetches against 132 cache hits in the session,
+and none at all during a slow refresh. Three separate causes.
+
+**One interaction ran 2-4 full refreshes at once.** Several pieces of watched
+state move for a single action - choosing a customization touches the active
+choices, the equipment and the skins - and each watcher started its own refresh:
+
+```
+17:57:50 Refreshing character appearance...
+17:57:52 Refreshing character appearance...
+17:58:07 Character appearance refresh complete
+17:58:08 Character appearance refresh complete
+```
+
+They now go through `src/js/ui/coalescer.js`: requests close together share a
+run, and requests arriving *during* a run queue exactly one follow-up however
+many arrive, since only the last state needs drawing. Every request still gets a
+promise resolved when a run covering it finishes, which is what lets live sync
+wait for the model to be dressed before it exports. Unit tested in the scratch
+harness, including the collapse case and that a failing task does not wedge it.
+
+One caller stays direct: `load_character_model`'s post-load refresh. A refresh
+can swap the model (`check_cond_model_swap`) and so re-enter that function, and
+the scheduler would make the inner call wait on the outer refresh it is running
+inside - a deadlock. There is a comment at the call site.
+
+**A refresh reloaded every texture of the character.** Changing a face re-read
+and re-decoded all 16, including every item texture, when one had changed.
+Decoded pixels now live in an LRU cache (128MB) shared by the material
+renderers, cleared on `casc-source-changed` since file data IDs are per build.
+GL textures still cannot be shared, as each renderer owns its context, but
+uploading pixels already in memory is cheap. The instrumentation left behind
+logs anything over 50ms: a character texture costs 50-135ms to read and 9-145ms
+to decode, which is where the quarter-second per texture went.
+
+**Compositing was quadratic.** `update()` redraws every target it holds and
+`setTextureTarget` called it per texture, so 16 textures meant 1+2+...+16 = 136
+draws, each allocating GL buffers. The character paths pass `deferUpdate` and
+composite once at the end, which `upload_textures_to_gpu` already did anyway.
+The creatures tab is untouched, since its final update is not guaranteed the
+same way. Two `console.log` calls also came out of the hot path - one per
+texture, one per layer per composite, so ~150 per refresh, which is not free
+with devtools open.
+
+A refresh now finishes inside a second.
 
 ## Startup performance: DB2 row lookups (commit 56571141)
 
@@ -772,8 +813,8 @@ it).
   `e849d4f9` (cloak textures), `8e43c888` (live sync), `56571141` (indexed
   DB2 row lookups), `27282234` (smaller live sync strip), `78c1eb36` (one pixel
   per block), `665f44a0` (bun lockfile refresh) and `18f70350` (live sync slot
-  filter) pushed to `origin/main`. `7b6b072f` (standard/high definition models)
-  is committed locally but not yet pushed.
+  filter), `7b6b072f` (standard/high definition models) and `02dec3a8`
+  (appearance refresh cost) pushed to `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
