@@ -355,6 +355,10 @@ class GLTFWriter {
 		let idx_bone_joints = -1
 		let idx_bone_weights = -1;
 		const animationBufferMap = new Map();
+
+		// bufferView index -> the animation whose buffer it points into, so the glb step
+		// can rebase those views without parsing names back out of strings
+		const animation_buffer_views = new Map();
 		const joint_node_index_map = new Map();
 
 		if (bones.length > 0) {
@@ -447,19 +451,21 @@ class GLTFWriter {
 					}
 
 					if (requiredBufferSize > 0) {
-						animationBufferMap.set(this.animations[animationIndex].id + "-" + this.animations[animationIndex].variationIndex, BufferWrapper.alloc(requiredBufferSize, true));
+						const anim_name = this.animations[animationIndex].id + "-" + this.animations[animationIndex].variationIndex;
+						animationBufferMap.set(anim_name, BufferWrapper.alloc(requiredBufferSize, true));
 
 						if (format === 'glb') {
 							// glb mode: animations go into buffer 0 (main binary chunk)
-							animation_buffer_lookup_map.set(this.animations[animationIndex].id + "-" + this.animations[animationIndex].variationIndex, 0);
+							animation_buffer_lookup_map.set(anim_name, 0);
 						} else {
 							// gltf mode: animations get separate buffer files
 							root.buffers.push({
-								uri: path.basename(outBIN, ".bin") + "_anim" + this.animations[animationIndex].id + "-" + this.animations[animationIndex].variationIndex + ".bin",
+								uri: path.basename(outBIN, ".bin") + "_anim" + anim_name + ".bin",
 								byteLength: requiredBufferSize
 							});
-							animation_buffer_lookup_map.set(this.animations[animationIndex].id + "-" + this.animations[animationIndex].variationIndex, root.buffers.length - 1);
+							animation_buffer_lookup_map.set(anim_name, root.buffers.length - 1);
 						}
+
 					}
 				}
 
@@ -572,17 +578,22 @@ class GLTFWriter {
 							paired.push({ time, value: bone.translation.values[i][j] });
 						}
 
+						const anim_key = this.animations[i].id + "-" + this.animations[i].variationIndex;
+
 						// sort by time to ensure strictly increasing timestamps (required by gltf 2.0 spec)
 						paired.sort((a, b) => a.time - b.time);
 
 						// Add new bufferView for bone timestamps.
 						// note: byteOffset stored here is relative to animation buffer, will be updated later for glb
-						root.bufferViews.push({
-							buffer: animation_buffer_lookup_map.get(this.animations[i].id + "-" + this.animations[i].variationIndex),
+						// its own bufferView: writeData(), primitive_attributes and add_buffered_accessor
+						// all assume accessor index and bufferView index are the same number
+						const trans_timestamps_view = root.bufferViews.push({
+							buffer: animation_buffer_lookup_map.get(anim_key),
 							byteLength: paired.length * 4,
-							byteOffset: animationBuffer.offset,
-							name: 'TRANS_TIMESTAMPS_' + bi + '_' + i,
-						});
+							byteOffset: animationBuffer.offset
+						}) - 1;
+
+						animation_buffer_views.set(trans_timestamps_view, anim_key);
 
 						root.animations[i].samplers.push(
 							{
@@ -600,8 +611,7 @@ class GLTFWriter {
 
 						// Add new SCALAR accessor for this bone's translation timestamps as floats.
 						root.accessors.push({
-							name: 'TRANS_TIMESTAMPS_' + bi + '_' + i,
-							bufferView: root.bufferViews.length - 1,
+							bufferView: trans_timestamps_view,
 							byteOffset: 0,
 							type: "SCALAR",
 							componentType: 5126, // Float
@@ -615,49 +625,31 @@ class GLTFWriter {
 
 						// VALUES
 						// Add new bufferView for bone timestamps.
-						root.bufferViews.push({
-							buffer: animation_buffer_lookup_map.get(this.animations[i].id + "-" + this.animations[i].variationIndex),
+						// its own bufferView: writeData(), primitive_attributes and add_buffered_accessor
+						// all assume accessor index and bufferView index are the same number
+						const trans_values_view = root.bufferViews.push({
+							buffer: animation_buffer_lookup_map.get(anim_key),
 							byteLength: paired.length * 3 * 4,
-							byteOffset: animationBuffer.offset,
-							name: 'TRANS_VALUES_' + bi + '_' + i,
-						});
+							byteOffset: animationBuffer.offset
+						}) - 1;
 
-						// Write out bone values to buffer in sorted order
-						let min = [9999999, 9999999, 9999999];
-						let max = [-9999999, -9999999, -9999999];
+						animation_buffer_views.set(trans_values_view, anim_key);
+
+						// no min/max: glTF requires them only on POSITION attributes and animation
+						// sampler inputs, and tracking them over every keyframe of every animation
+						// was pure cost
 						for (const entry of paired) {
 							animationBuffer.writeFloatLE(entry.value[0]);
 							animationBuffer.writeFloatLE(entry.value[1]);
 							animationBuffer.writeFloatLE(entry.value[2]);
-
-							if (entry.value[0] < min[0])
-								min[0] = entry.value[0];
-
-							if (entry.value[1] < min[1])
-								min[1] = entry.value[1];
-
-							if (entry.value[2] < min[2])
-								min[2] = entry.value[2];
-
-							if (entry.value[0] > max[0])
-								max[0] = entry.value[0];
-
-							if (entry.value[1] > max[1])
-								max[1] = entry.value[1];
-
-							if (entry.value[2] > max[2])
-								max[2] = entry.value[2];
 						}
 
 						// Add new VEC3 accessor for this bone's translation values.
 						root.accessors.push({
-							name: 'TRANS_VALUES_' + bi + '_' + i,
-							bufferView: root.bufferViews.length - 1,
+							bufferView: trans_values_view,
 							byteOffset: 0,
 							type: "VEC3",
-							componentType: 5126, // Float
-							min: min,
-							max: max
+							componentType: 5126 // Float
 						});
 
 						root.animations[i].samplers[root.animations[i].samplers.length - 1].output = root.accessors.length - 1;
@@ -703,16 +695,21 @@ class GLTFWriter {
 							paired.push({ time, value: bone.rotation.values[i][j] });
 						}
 
+						const anim_key = this.animations[i].id + "-" + this.animations[i].variationIndex;
+
 						// sort by time to ensure strictly increasing timestamps (required by gltf 2.0 spec)
 						paired.sort((a, b) => a.time - b.time);
 
 						// Add new bufferView for bone timestamps.
-						root.bufferViews.push({
-							buffer: animation_buffer_lookup_map.get(this.animations[i].id + "-" + this.animations[i].variationIndex),
+						// its own bufferView: writeData(), primitive_attributes and add_buffered_accessor
+						// all assume accessor index and bufferView index are the same number
+						const rot_timestamps_view = root.bufferViews.push({
+							buffer: animation_buffer_lookup_map.get(anim_key),
 							byteLength: paired.length * 4,
-							byteOffset: animationBuffer.offset,
-							name: 'ROT_TIMESTAMPS_' + bi + '_' + i,
-						});
+							byteOffset: animationBuffer.offset
+						}) - 1;
+
+						animation_buffer_views.set(rot_timestamps_view, anim_key);
 
 						root.animations[i].samplers.push(
 							{
@@ -730,8 +727,7 @@ class GLTFWriter {
 
 						// Add new SCALAR accessor for this bone's rotation timestamps as floats.
 						root.accessors.push({
-							name: 'ROT_TIMESTAMPS_' + bi + '_' + i,
-							bufferView: root.bufferViews.length - 1,
+							bufferView: rot_timestamps_view,
 							byteOffset: 0,
 							type: "SCALAR",
 							componentType: 5126, // Float
@@ -745,56 +741,31 @@ class GLTFWriter {
 
 						// VALUES
 						// Add new bufferView for bone timestamps.
-						root.bufferViews.push({
-							buffer: animation_buffer_lookup_map.get(this.animations[i].id + "-" + this.animations[i].variationIndex),
+						// its own bufferView: writeData(), primitive_attributes and add_buffered_accessor
+						// all assume accessor index and bufferView index are the same number
+						const rot_values_view = root.bufferViews.push({
+							buffer: animation_buffer_lookup_map.get(anim_key),
 							byteLength: paired.length * 4 * 4,
-							byteOffset: animationBuffer.offset,
-							name: 'ROT_VALUES_' + bi + '_' + i,
-						});
+							byteOffset: animationBuffer.offset
+						}) - 1;
+
+						animation_buffer_views.set(rot_values_view, anim_key);
 
 						// Write out bone values to buffer in sorted order
-						let min = [9999999, 9999999, 9999999, 9999999];
-						let max = [-9999999, -9999999, -9999999, -9999999];
+						// see above: no min/max on sampler outputs
 						for (const entry of paired) {
 							animationBuffer.writeFloatLE(entry.value[0]);
 							animationBuffer.writeFloatLE(entry.value[1]);
 							animationBuffer.writeFloatLE(entry.value[2]);
 							animationBuffer.writeFloatLE(entry.value[3]);
-
-							if (entry.value[0] < min[0])
-								min[0] = entry.value[0];
-
-							if (entry.value[1] < min[1])
-								min[1] = entry.value[1];
-
-							if (entry.value[2] < min[2])
-								min[2] = entry.value[2];
-
-							if (entry.value[3] < min[3])
-								min[3] = entry.value[3];
-
-							if (entry.value[0] > max[0])
-								max[0] = entry.value[0];
-
-							if (entry.value[1] > max[1])
-								max[1] = entry.value[1];
-
-							if (entry.value[2] > max[2])
-								max[2] = entry.value[2];
-
-							if (entry.value[3] > max[3])
-								max[3] = entry.value[3];
 						}
 
 						// Add new VEC3 accessor for this bone's rotation values.
 						root.accessors.push({
-							name: 'ROT_VALUES_' + bi + '_' + i,
-							bufferView: root.bufferViews.length - 1,
+							bufferView: rot_values_view,
 							byteOffset: 0,
 							type: "VEC4",
-							componentType: 5126, // Float
-							min: min,
-							max: max
+							componentType: 5126 // Float
 						});
 
 						root.animations[i].samplers[root.animations[i].samplers.length - 1].output = root.accessors.length - 1;
@@ -843,16 +814,21 @@ class GLTFWriter {
 							paired.push({ time, value: scale_track.values[j] });
 						}
 
+						const anim_key = this.animations[i].id + "-" + this.animations[i].variationIndex;
+
 						// sort by time to ensure strictly increasing timestamps (required by gltf 2.0 spec)
 						paired.sort((a, b) => a.time - b.time);
 
 						// Add new bufferView for bone timestamps.
-						root.bufferViews.push({
-							buffer: animation_buffer_lookup_map.get(this.animations[i].id + "-" + this.animations[i].variationIndex),
+						// its own bufferView: writeData(), primitive_attributes and add_buffered_accessor
+						// all assume accessor index and bufferView index are the same number
+						const scale_timestamps_view = root.bufferViews.push({
+							buffer: animation_buffer_lookup_map.get(anim_key),
 							byteLength: paired.length * 4,
-							byteOffset: animationBuffer.offset,
-							name: 'SCALE_TIMESTAMPS_' + bi + '_' + i,
-						});
+							byteOffset: animationBuffer.offset
+						}) - 1;
+
+						animation_buffer_views.set(scale_timestamps_view, anim_key);
 
 						root.animations[i].samplers.push(
 							{
@@ -870,8 +846,7 @@ class GLTFWriter {
 
 						// Add new SCALAR accessor for this bone's scale timestamps as floats.
 						root.accessors.push({
-							name: 'SCALE_TIMESTAMPS_' + bi + '_' + i,
-							bufferView: root.bufferViews.length - 1,
+							bufferView: scale_timestamps_view,
 							byteOffset: 0,
 							type: "SCALAR",
 							componentType: 5126, // Float
@@ -885,49 +860,31 @@ class GLTFWriter {
 
 						// VALUES
 						// Add new bufferView for bone timestamps.
-						root.bufferViews.push({
-							buffer: animation_buffer_lookup_map.get(this.animations[i].id + "-" + this.animations[i].variationIndex),
+						// its own bufferView: writeData(), primitive_attributes and add_buffered_accessor
+						// all assume accessor index and bufferView index are the same number
+						const scale_values_view = root.bufferViews.push({
+							buffer: animation_buffer_lookup_map.get(anim_key),
 							byteLength: paired.length * 3 * 4,
-							byteOffset: animationBuffer.offset,
-							name: 'SCALE_VALUES_' + bi + '_' + i,
-						});
+							byteOffset: animationBuffer.offset
+						}) - 1;
 
-						// Write out bone values to buffer in sorted order
-						let min = [9999999, 9999999, 9999999];
-						let max = [-9999999, -9999999, -9999999];
+						animation_buffer_views.set(scale_values_view, anim_key);
+
+						// no min/max: glTF requires them only on POSITION attributes and animation
+						// sampler inputs, and tracking them over every keyframe of every animation
+						// was pure cost
 						for (const entry of paired) {
 							animationBuffer.writeFloatLE(entry.value[0]);
 							animationBuffer.writeFloatLE(entry.value[1]);
 							animationBuffer.writeFloatLE(entry.value[2]);
-
-							if (entry.value[0] < min[0])
-								min[0] = entry.value[0];
-
-							if (entry.value[1] < min[1])
-								min[1] = entry.value[1];
-
-							if (entry.value[2] < min[2])
-								min[2] = entry.value[2];
-
-							if (entry.value[0] > max[0])
-								max[0] = entry.value[0];
-
-							if (entry.value[1] > max[1])
-								max[1] = entry.value[1];
-
-							if (entry.value[2] > max[2])
-								max[2] = entry.value[2];
 						}
 
 						// Add new VEC3 accessor for this bone's scale values.
 						root.accessors.push({
-							name: 'SCALE_VALUES_' + bi + '_' + i,
-							bufferView: root.bufferViews.length - 1,
+							bufferView: scale_values_view,
 							byteOffset: 0,
 							type: "VEC3",
-							componentType: 5126, // Float
-							min: min,
-							max: max
+							componentType: 5126 // Float
 						});
 
 						root.animations[i].samplers[root.animations[i].samplers.length - 1].output = root.accessors.length - 1;
@@ -1548,23 +1505,13 @@ class GLTFWriter {
 				bins.push(animBuffer);
 			}
 
-			// update all bufferViews that reference animation data
-			for (const bufferView of root.bufferViews) {
-				if (bufferView.buffer === 0 && bufferView.name && (
-					bufferView.name.startsWith('TRANS_') ||
-					bufferView.name.startsWith('ROT_') ||
-					bufferView.name.startsWith('SCALE_')
-				)) {
-					// extract animation name from bufferView name
-					const name_parts = bufferView.name.split('_');
-					const bone_idx = name_parts[2];
-					const anim_idx = name_parts[3];
-					const animName = this.animations[anim_idx].id + "-" + this.animations[anim_idx].variationIndex;
-
-					// update byteOffset to absolute position in combined buffer
-					const base_offset = anim_buffer_base_offsets.get(animName);
-					bufferView.byteOffset += base_offset;
-				}
+			// move each animation's view to where its buffer landed in the combined
+			// binary. Tracked by index when the view was created rather than parsed back
+			// out of a name, which is why the accessors need no names at all.
+			for (const [view_index, animName] of animation_buffer_views) {
+				const base_offset = anim_buffer_base_offsets.get(animName);
+				if (base_offset !== undefined)
+					root.bufferViews[view_index].byteOffset += base_offset;
 			}
 		}
 
@@ -1582,7 +1529,9 @@ class GLTFWriter {
 		} else {
 			// gltf mode: write separate json and bin files
 			root.buffers[0].uri = path.basename(outBIN);
-			await fsp.writeFile(outGLTF, JSON.stringify(root, null, '\t'), 'utf8');
+			// not indented: on a model with hundreds of animations the tabs alone came to
+			// 25MB of the file, and nothing reads a file that size by eye
+			await fsp.writeFile(outGLTF, JSON.stringify(root), 'utf8');
 			await bin_combined.writeToFile(outBIN);
 		}
 
