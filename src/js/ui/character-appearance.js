@@ -64,13 +64,22 @@ function apply_customization_geosets(geosets, active_choices) {
 		}
 	}
 
+	// only one geoset in a group may be shown at a time, the same rule the
+	// equipment pass in update_geosets applies. a choice's plain variant usually has no
+	// element row of its own, so the group's default (...01, enabled by the
+	// reset above) is not in hide_ids and would otherwise render underneath
+	// the choice's geoset - a closed mouth behind a slackjaw, for example.
+	const shown_groups = new Set();
+	for (const geoset_id of show_ids)
+		shown_groups.add(Math.floor(geoset_id / 100));
+
 	for (const geoset of geosets) {
 		if (geoset.id === 0)
 			continue;
 
 		if (show_ids.has(geoset.id))
 			geoset.checked = true;
-		else if (hide_ids.has(geoset.id))
+		else if (hide_ids.has(geoset.id) || shown_groups.has(Math.floor(geoset.id / 100)))
 			geoset.checked = false;
 	}
 }
