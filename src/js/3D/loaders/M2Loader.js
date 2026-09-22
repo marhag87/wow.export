@@ -8,7 +8,7 @@ const Texture = require('../Texture');
 const Skin = require('../Skin');
 const constants = require('../../constants');
 const M2Generics = require('./M2Generics');
-const ANIMLoader = require('./ANIMLoader');
+const { load_anim_payload } = require('./ANIMLoader');
 const core = require('../../core');
 const BufferWrapper = require('../../buffer');
 const AnimMapper = require('../AnimMapper');
@@ -85,6 +85,8 @@ class M2Loader {
 	 * Load and apply .anim files to loaded M2 model.
 	 */
 	async loadAnims(load_all = true) {
+		let in_m2_count = 0;
+		let failed_count = 0;
 		if (!load_all)
 			return;
 
@@ -98,7 +100,7 @@ class M2Loader {
 			}
 
 			if ((animation.flags & 0x20) === 0x20) {
-				log.write('Skipping .anim loading for ' + AnimMapper.get_anim_name(animation.id) + ' because it should be in M2');
+				in_m2_count++;
 				continue;
 			}
 
@@ -113,20 +115,13 @@ class M2Loader {
 						continue;
 					}
 
-					log.write('Loading .anim file for animation: ' + entry.animID + ' (' + AnimMapper.get_anim_name(entry.animID) + ') - ' + entry.subAnimID);
 
 					let animIsChunked = false;
 
 					if ((this.flags & 0x200000) === 0x200000 || this.skeletonFileID > 0)
 						animIsChunked = true;
 
-					const loader = new ANIMLoader(await core.view.casc.getFile(fileDataID));
-					await loader.load(animIsChunked);
-
-					if (loader.skeletonBoneData !== undefined)
-						this.animFiles.set(i, BufferWrapper.from(loader.skeletonBoneData));
-					else
-						this.animFiles.set(i, BufferWrapper.from(loader.animData));
+					this.animFiles.set(i, BufferWrapper.from(await load_anim_payload(fileDataID, animIsChunked, AnimMapper.get_anim_name(entry.animID) + ' ' + entry.animID + '.' + entry.subAnimID)));
 
 					// patch this animation into bones
 					this._patch_bone_animation(i);
@@ -134,8 +129,13 @@ class M2Loader {
 			}
 
 			if (!this.animFiles.has(i))
-				log.write('Failed to load .anim file for animation: ' + animation.id + ' (' + AnimMapper.get_anim_name(animation.id) + ') - ' + animation.variationIndex);
+				failed_count++;
 		}
+
+		// one line, not one per animation: a character model can have hundreds, and
+		// this runs on every export
+		if (in_m2_count > 0 || failed_count > 0)
+			log.write('loadAnims: %d animations held in the M2, %d with no .anim data', in_m2_count, failed_count);
 	}
 
 	/**
@@ -176,21 +176,13 @@ class M2Loader {
 				return false;
 			}
 
-			log.write('Loading .anim file for animation: ' + entry.animID + ' (' + AnimMapper.get_anim_name(entry.animID) + ') - ' + entry.subAnimID);
 
 			let animIsChunked = false;
 			if ((this.flags & 0x200000) === 0x200000 || this.skeletonFileID > 0)
 				animIsChunked = true;
 
 			try {
-				const loader = new ANIMLoader(await core.view.casc.getFile(fileDataID));
-				await loader.load(animIsChunked);
-
-				// store .anim data
-				if (loader.skeletonBoneData !== undefined)
-					this.animFiles.set(animationIndex, BufferWrapper.from(loader.skeletonBoneData));
-				else
-					this.animFiles.set(animationIndex, BufferWrapper.from(loader.animData));
+				this.animFiles.set(animationIndex, BufferWrapper.from(await load_anim_payload(fileDataID, animIsChunked)));
 
 				// patch animation data into existing bones
 				this._patch_bone_animation(animationIndex);

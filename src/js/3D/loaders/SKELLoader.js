@@ -15,7 +15,7 @@ const M2Generics = require('./M2Generics');
 const BufferWrapper = require('../../buffer');
 const AnimMapper = require('../AnimMapper');
 const log = require('../../log');
-const ANIMLoader = require('./ANIMLoader');
+const { load_anim_payload } = require('./ANIMLoader');
 const core = require('../../core');
 
 // See: https://wowdev.wiki/M2/.skel
@@ -329,13 +329,7 @@ class SKELLoader {
 
 			log.write('lazy load .anim for %d (%s) sub=%d fileDataID=%d', entry.animID, AnimMapper.get_anim_name(entry.animID), entry.subAnimID, fileDataID);
 
-			const loader = new ANIMLoader(await core.view.casc.getFile(fileDataID));
-			await loader.load(true);
-
-			if (loader.skeletonBoneData !== undefined)
-				this.animFiles.set(animation_index, BufferWrapper.from(loader.skeletonBoneData));
-			else
-				this.animFiles.set(animation_index, BufferWrapper.from(loader.animData));
+			this.animFiles.set(animation_index, BufferWrapper.from(await load_anim_payload(fileDataID, true)));
 
 			// patch animation data into existing bones
 			this._patch_bone_animation(animation_index);
@@ -405,6 +399,9 @@ class SKELLoader {
 	}
 
 	async loadAnims(load_all = true) {
+		let in_skel_count = 0;
+		let failed_count = 0;
+
 		if (!load_all)
 			return;
 
@@ -418,7 +415,7 @@ class SKELLoader {
 			}
 
 			if ((animation.flags & 0x20) === 0x20) {
-				log.write('Skipping .anim loading for ' + AnimMapper.get_anim_name(animation.id) + ' because it should be in SKEL');
+				in_skel_count++;
 				continue;
 			}
 
@@ -433,15 +430,8 @@ class SKELLoader {
 						continue;
 					}
 
-					log.write('Loading .anim file for animation: ' + entry.animID + ' (' + AnimMapper.get_anim_name(entry.animID) + ') - ' + entry.subAnimID);
 
-					const loader = new ANIMLoader(await core.view.casc.getFile(fileDataID));
-					await loader.load(true);
-
-					if (loader.skeletonBoneData !== undefined)
-						this.animFiles.set(i, BufferWrapper.from(loader.skeletonBoneData));
-					else
-						this.animFiles.set(i, BufferWrapper.from(loader.animData));
+					this.animFiles.set(i, BufferWrapper.from(await load_anim_payload(fileDataID, true, AnimMapper.get_anim_name(entry.animID) + ' ' + entry.animID + '.' + entry.subAnimID)));
 
 					// patch this animation into bones
 					this._patch_bone_animation(i);
@@ -449,8 +439,12 @@ class SKELLoader {
 			}
 
 			if (!this.animFiles.has(i))
-				log.write('Failed to load .anim file for animation: ' + animation.id + ' (' + AnimMapper.get_anim_name(animation.id) + ') - ' + animation.variationIndex);
+				failed_count++;
 		}
+
+		// one line, not one per animation: this runs on every export
+		if (in_skel_count > 0 || failed_count > 0)
+			log.write('loadAnims: %d animations held in the SKEL, %d with no .anim data', in_skel_count, failed_count);
 	}
 }
 

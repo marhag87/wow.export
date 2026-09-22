@@ -356,6 +356,10 @@ class GLTFWriter {
 		let idx_bone_weights = -1;
 		const animationBufferMap = new Map();
 
+		// animations whose .bin on disk is already correct; their buffers are advanced
+		// rather than filled, and not written out again
+		const unchanged_animations = new Set();
+
 		// bufferView index -> the animation whose buffer it points into, so the glb step
 		// can rebase those views without parsing names back out of strings
 		const animation_buffer_views = new Map();
@@ -453,6 +457,20 @@ class GLTFWriter {
 					if (requiredBufferSize > 0) {
 						const anim_name = this.animations[animationIndex].id + "-" + this.animations[animationIndex].variationIndex;
 						animationBufferMap.set(anim_name, BufferWrapper.alloc(requiredBufferSize, true));
+
+						// A file already there at the expected length holds the same bytes, since a
+						// model's animation data does not depend on anything that changes between
+						// exports. Its contents are then never written or read, so only the offsets
+						// and lengths matter and the floats need not be produced at all.
+						if (format === 'gltf') {
+							const anim_path = path.join(out_dir, path.basename(outBIN, ".bin") + "_anim" + anim_name + ".bin");
+							try {
+								if ((await fsp.stat(anim_path)).size === requiredBufferSize)
+									unchanged_animations.add(anim_name);
+							} catch (e) {
+								// not written yet
+							}
+						}
 
 						if (format === 'glb') {
 							// glb mode: animations go into buffer 0 (main binary chunk)
@@ -579,6 +597,7 @@ class GLTFWriter {
 						}
 
 						const anim_key = this.animations[i].id + "-" + this.animations[i].variationIndex;
+						const reuse_buffer = unchanged_animations.has(anim_key);
 
 						// sort by time to ensure strictly increasing timestamps (required by gltf 2.0 spec)
 						paired.sort((a, b) => a.time - b.time);
@@ -606,8 +625,11 @@ class GLTFWriter {
 						let time_min = 0;
 						let time_max = anim_duration / 1000;
 
-						for (const entry of paired)
-							animationBuffer.writeFloatLE(entry.time);
+						if (reuse_buffer)
+							animationBuffer.seek(animationBuffer.offset + paired.length * 4);
+						else
+							for (const entry of paired)
+								animationBuffer.writeFloatLE(entry.time);
 
 						// Add new SCALAR accessor for this bone's translation timestamps as floats.
 						root.accessors.push({
@@ -638,10 +660,14 @@ class GLTFWriter {
 						// no min/max: glTF requires them only on POSITION attributes and animation
 						// sampler inputs, and tracking them over every keyframe of every animation
 						// was pure cost
-						for (const entry of paired) {
-							animationBuffer.writeFloatLE(entry.value[0]);
-							animationBuffer.writeFloatLE(entry.value[1]);
-							animationBuffer.writeFloatLE(entry.value[2]);
+						if (reuse_buffer) {
+							animationBuffer.seek(animationBuffer.offset + paired.length * 3 * 4);
+						} else {
+							for (const entry of paired) {
+								animationBuffer.writeFloatLE(entry.value[0]);
+								animationBuffer.writeFloatLE(entry.value[1]);
+								animationBuffer.writeFloatLE(entry.value[2]);
+							}
 						}
 
 						// Add new VEC3 accessor for this bone's translation values.
@@ -696,6 +722,7 @@ class GLTFWriter {
 						}
 
 						const anim_key = this.animations[i].id + "-" + this.animations[i].variationIndex;
+						const reuse_buffer = unchanged_animations.has(anim_key);
 
 						// sort by time to ensure strictly increasing timestamps (required by gltf 2.0 spec)
 						paired.sort((a, b) => a.time - b.time);
@@ -722,8 +749,11 @@ class GLTFWriter {
 						let time_min = 0;
 						let time_max = anim_duration / 1000;
 
-						for (const entry of paired)
-							animationBuffer.writeFloatLE(entry.time);
+						if (reuse_buffer)
+							animationBuffer.seek(animationBuffer.offset + paired.length * 4);
+						else
+							for (const entry of paired)
+								animationBuffer.writeFloatLE(entry.time);
 
 						// Add new SCALAR accessor for this bone's rotation timestamps as floats.
 						root.accessors.push({
@@ -753,11 +783,15 @@ class GLTFWriter {
 
 						// Write out bone values to buffer in sorted order
 						// see above: no min/max on sampler outputs
-						for (const entry of paired) {
-							animationBuffer.writeFloatLE(entry.value[0]);
-							animationBuffer.writeFloatLE(entry.value[1]);
-							animationBuffer.writeFloatLE(entry.value[2]);
-							animationBuffer.writeFloatLE(entry.value[3]);
+						if (reuse_buffer) {
+							animationBuffer.seek(animationBuffer.offset + paired.length * 4 * 4);
+						} else {
+							for (const entry of paired) {
+								animationBuffer.writeFloatLE(entry.value[0]);
+								animationBuffer.writeFloatLE(entry.value[1]);
+								animationBuffer.writeFloatLE(entry.value[2]);
+								animationBuffer.writeFloatLE(entry.value[3]);
+							}
 						}
 
 						// Add new VEC3 accessor for this bone's rotation values.
@@ -815,6 +849,7 @@ class GLTFWriter {
 						}
 
 						const anim_key = this.animations[i].id + "-" + this.animations[i].variationIndex;
+						const reuse_buffer = unchanged_animations.has(anim_key);
 
 						// sort by time to ensure strictly increasing timestamps (required by gltf 2.0 spec)
 						paired.sort((a, b) => a.time - b.time);
@@ -841,8 +876,11 @@ class GLTFWriter {
 						let time_min = 0;
 						let time_max = anim_duration / 1000;
 
-						for (const entry of paired)
-							animationBuffer.writeFloatLE(entry.time);
+						if (reuse_buffer)
+							animationBuffer.seek(animationBuffer.offset + paired.length * 4);
+						else
+							for (const entry of paired)
+								animationBuffer.writeFloatLE(entry.time);
 
 						// Add new SCALAR accessor for this bone's scale timestamps as floats.
 						root.accessors.push({
@@ -873,10 +911,14 @@ class GLTFWriter {
 						// no min/max: glTF requires them only on POSITION attributes and animation
 						// sampler inputs, and tracking them over every keyframe of every animation
 						// was pure cost
-						for (const entry of paired) {
-							animationBuffer.writeFloatLE(entry.value[0]);
-							animationBuffer.writeFloatLE(entry.value[1]);
-							animationBuffer.writeFloatLE(entry.value[2]);
+						if (reuse_buffer) {
+							animationBuffer.seek(animationBuffer.offset + paired.length * 3 * 4);
+						} else {
+							for (const entry of paired) {
+								animationBuffer.writeFloatLE(entry.value[0]);
+								animationBuffer.writeFloatLE(entry.value[1]);
+								animationBuffer.writeFloatLE(entry.value[2]);
+							}
 						}
 
 						// Add new VEC3 accessor for this bone's scale values.
@@ -1531,16 +1573,35 @@ class GLTFWriter {
 			root.buffers[0].uri = path.basename(outBIN);
 			// not indented: on a model with hundreds of animations the tabs alone came to
 			// 25MB of the file, and nothing reads a file that size by eye
-			await fsp.writeFile(outGLTF, JSON.stringify(root), 'utf8');
+			const json_started = performance.now();
+			const json = JSON.stringify(root);
+			const json_built = performance.now();
+			await fsp.writeFile(outGLTF, json, 'utf8');
+			log.write('glTF json: %dms to build, %dms to write, %dMB',
+				Math.round(json_built - json_started), Math.round(performance.now() - json_built),
+				Math.round(json.length / 1048576));
 			await bin_combined.writeToFile(outBIN);
 		}
 
 		// write out animation buffers (gltf mode only, glb embeds them)
 		if (format === 'gltf') {
+			let reused = 0;
+
 			for (const [animationName, animationBuffer] of animationBufferMap) {
 				const animationPath = path.join(out_dir, path.basename(outBIN, ".bin") + "_anim" + animationName + ".bin");
+
+				// already established as correct when the buffer was allocated, and left
+				// unfilled on that basis
+				if (unchanged_animations.has(animationName)) {
+					reused++;
+					continue;
+				}
+
 				await animationBuffer.writeToFile(animationPath);
 			}
+
+			if (reused > 0)
+				log.write('Reused %d unchanged animation buffers, wrote %d', reused, animationBufferMap.size - reused);
 		}
 	}
 }
