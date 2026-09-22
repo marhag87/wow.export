@@ -541,6 +541,51 @@ Customization links, not in the export panel: 13 of them there made the panel
 tall enough to cover the equipment slots and Clear All Equipment behind it, and
 collapsing the list behind a summary line still cost two lines of height.
 
+### Reading customization choices from the barbershop (commit fdd95b0c)
+
+Live sync covers equipment, but nothing reported which customization choices a
+character actually has, so a saved character had to be matched to the real one
+by eye. The client exposes this only through `C_BarberShop`, and only during a
+barbershop session — there is no way to read it while standing around.
+
+On Classic Forever the barbershop UI itself is broken: its category layout
+reuses character-creation code and dies on `attempt to index global
+'CharacterCreateFrame' (a nil value)` in `UpdateSmallButtons`. The stack shows
+the error happening inside `SetCustomizations`, with the categories table
+already passed in, which is what made this worth trying at all — the data
+arrives, only the code drawing it fails. `GetAvailableCustomizations` is present
+in `WowB.exe`, so the API is compiled in; only its UI is missing.
+
+The addon captures on `BARBER_SHOP_OPEN`, retrying at 0.5s and 2s because the
+data can land after the event, and prints on `BARBER_SHOP_CLOSE` — the
+barbershop covers the chat frame, so nothing can be read or typed while seated,
+and a `/run` one-liner is not usable here. The capture is kept in saved
+variables, so `/wxls cust` reprints it and the file can be read from disk at
+`WTF/Account/<account>/SavedVariables/WoWExportLiveSync.lua`. Saved variables
+only flush on logout or `/reload`.
+
+What comes out is one entry per option with both IDs, which are the same
+`optionID`/`choiceID` pairs a saved character JSON stores, so the two can be
+compared directly. Options that are colour swatches or numbered faces have an
+empty `choice_name` in the client data — the IDs still identify them.
+
+Verified against two characters. A Tauren matched its saved JSON on all seven
+options. A Forsaken differed on exactly two, Face and Hair Color, by 8 and 9
+choice IDs — both unnamed options, the ones that have to be matched by eye
+rather than by reading a label, while every named option was correct. Worth
+knowing when reading a mismatch: `currentChoiceIndex` tracks what is on screen,
+so browsing in the chair during the first couple of seconds would be captured
+as the character's appearance.
+
+The store uses a single `customizations` key, so a second character's capture
+overwrites the first. Keying by character name would be needed to hold several.
+
+If this is ever wired into the tab, reading the saved variables file from disk
+looks better than widening the strip: customization only changes at a
+barbershop, seven ~17-bit choice IDs would not fit the 44-block budget
+comfortably, and the tab already applies a full `{optionID, choiceID}` set
+through `chrImportChoices`. The cost is that it only refreshes on reload.
+
 ## Standard and high definition models (commit 7b6b072f)
 
 Clients that ship both model sets - Classic Forever (`wow_classic_beta`,
