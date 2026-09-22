@@ -5,6 +5,7 @@
  */
 const log = require('../../log');
 const db2 = require('../../casc/db2');
+const listfile = require('../../casc/listfile');
 const DBCreatures = require('./DBCreatures');
 
 const tfd_map = new Map();
@@ -19,6 +20,7 @@ const choice_to_option = new Map();
 const default_options = new Array();
 
 const chr_model_id_to_file_data_id = new Map();
+const chr_model_sd_variant = new Map();
 const chr_model_id_to_texture_layout_id = new Map();
 
 const chr_race_map = new Map();
@@ -238,13 +240,58 @@ const _initialize = async () => {
 	for (const [chr_customization_skinned_model_id, chr_customization_skinned_model_row] of await db2.ChrCustomizationSkinnedModel.getAllRows())
 		chr_cust_skinned_model_map.set(chr_customization_skinned_model_id, chr_customization_skinned_model_row);
 
+	build_sd_variant_map();
+
 	log.write('Character customization data loaded');
 	is_initialized = true;
 	init_promise = null;
 };
 
+/**
+ * Pair each high definition model with its standard definition counterpart.
+ *
+ * Clients that ship both sets (Classic Forever, say) point ChrRaceXChrModel at the
+ * high definition models only, and leave the standard definition ones as ChrModel
+ * rows nothing references. They are complete definitions, each with its own texture
+ * layout, skeleton and customization options, so they cannot be paired by anything
+ * in the tables: the link is the model file itself, whose high definition path is
+ * the standard one with an _hd suffix.
+ */
+function build_sd_variant_map() {
+	const model_by_file_name = new Map();
+
+	for (const [model_id, file_data_id] of chr_model_id_to_file_data_id) {
+		const file_name = listfile.getByID(file_data_id);
+		if (typeof file_name === 'string')
+			model_by_file_name.set(file_name.toLowerCase(), model_id);
+	}
+
+	for (const [model_id, file_data_id] of chr_model_id_to_file_data_id) {
+		const file_name = listfile.getByID(file_data_id);
+		if (typeof file_name !== 'string')
+			continue;
+
+		const sd_name = file_name.toLowerCase().replace(/_hd(\.[^.]+)$/, '$1');
+		if (sd_name === file_name.toLowerCase())
+			continue;
+
+		const sd_model_id = model_by_file_name.get(sd_name);
+		if (sd_model_id !== undefined)
+			chr_model_sd_variant.set(model_id, sd_model_id);
+	}
+
+	if (chr_model_sd_variant.size > 0)
+		log.write('Found standard definition variants for %d character models', chr_model_sd_variant.size);
+}
+
 // getters
 const get_model_file_data_id = (model_id) => chr_model_id_to_file_data_id.get(model_id);
+
+/**
+ * The standard definition counterpart of a model, if the client ships one.
+ * @returns {number|undefined}
+ */
+const get_sd_model_id = (model_id) => chr_model_sd_variant.get(model_id);
 const get_texture_layout_id = (model_id) => chr_model_id_to_texture_layout_id.get(model_id);
 const get_options_for_model = (model_id) => options_by_chr_model.get(model_id);
 const get_choices_for_option = (option_id) => option_to_choices.get(option_id);
@@ -336,6 +383,7 @@ module.exports = {
 	get_option_to_choices_map,
 
 	get_chr_model_id,
+	get_sd_model_id,
 	get_race_models,
 	get_chr_race_map,
 	is_race_bare_feet,

@@ -145,6 +145,13 @@ async function apply_customization_textures(renderer, active_choices, layout_id,
 			}
 
 			const chr_cust_mat = DBCharacterCustomization.get_chr_cust_material(chr_cust_mat_id.ChrCustomizationMaterialID);
+
+			// a material can resolve to no texture at all, e.g. a choice that clears
+			// one, or a material resource the client does not ship. Loading it would
+			// ask CASC for a null file and fail the whole model, so skip it.
+			if (chr_cust_mat === undefined || !chr_cust_mat.FileDataID)
+				continue;
+
 			const chr_model_texture_target = chr_cust_mat.ChrModelTextureTargetID;
 
 			const chr_model_texture_layer = DBCharacterCustomization.get_model_texture_layer(layout_id, chr_model_texture_target);

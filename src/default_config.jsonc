@@ -86,6 +86,7 @@
 	"chrShowBackground": false,
 	"chrBackgroundColor": "#000000",
 	"chrExportApplyPose": true,
+	"chrModelDefinition": "HD",
 	"chrExportToNamedFolder": false,
 	"chrExportFaceForward": false,
 	"chrLastCharacter": "",

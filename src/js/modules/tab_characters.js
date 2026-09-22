@@ -89,9 +89,12 @@ function get_current_race_gender(core) {
 	if (!models_for_race)
 		return null;
 
-	// find the sex that matches the selected model ID
+	// find the sex that matches the selected model ID. ChrRaceXChrModel names only
+	// the high definition model, so a standard definition selection is matched
+	// through its pairing; without this the race and gender come back unknown and
+	// everything keyed on them breaks, from item textures to helmet geosets.
 	for (const [sex, model_id] of models_for_race) {
-		if (model_id === model_selection.id)
+		if (model_id === model_selection.id || DBCharacterCustomization.get_sd_model_id(model_id) === model_selection.id)
 			return { raceID: race_id, genderIndex: sex };
 	}
 
@@ -1010,14 +1013,26 @@ function update_chr_model_list(core) {
 		selection_index = model_id_map.indexOf(core.view.chrCustModelSelection[0].id);
 	}
 
+	// ChrRaceXChrModel names the high definition model where a client ships both
+	const has_sd = [...models_for_race.values()].some(id => DBCharacterCustomization.get_sd_model_id(id) !== undefined);
+	core.view.chrCustModelHasSD = has_sd;
+
+	if (!has_sd)
+		core.view.config.chrModelDefinition = 'HD';
+
+	const want_sd = has_sd && core.view.config.chrModelDefinition === 'SD';
+
 	core.view.chrCustModels = [];
 
 	const listed_model_ids = [];
 
 	for (const [chr_sex, chr_model_id] of models_for_race) {
-		const new_model = { id: chr_model_id, label: 'Type ' + (chr_sex + 1) };
+		const sd_model_id = DBCharacterCustomization.get_sd_model_id(chr_model_id);
+		const effective_id = want_sd && sd_model_id !== undefined ? sd_model_id : chr_model_id;
+
+		const new_model = { id: effective_id, label: 'Type ' + (chr_sex + 1) };
 		core.view.chrCustModels.push(new_model);
-		listed_model_ids.push(chr_model_id);
+		listed_model_ids.push(effective_id);
 	}
 
 	if (core.view.chrImportChrModelID != 0) {
@@ -2525,6 +2540,14 @@ module.exports = {
 							<option v-for="model in $core.view.chrCustModels" :key="model.id" :value="model.id">{{ model.label }}</option>
 						</select>
 					</label>
+					<label class="ui-select-label" v-if="$core.view.chrCustModelHasSD">
+						<span class="select-prefix"><span class="prefix-label">Character Model:</span> <span class="prefix-value">{{ $core.view.config.chrModelDefinition }}</span></span>
+						<select class="ui-select" id="select-chr-model-definition" :value="$core.view.config.chrModelDefinition" @change="$core.view.config.chrModelDefinition = $event.target.value">
+							<option value="" disabled selected style="display:none;"></option>
+							<option value="HD">HD</option>
+							<option value="SD">SD</option>
+						</select>
+					</label>
 					<template v-for="option in $core.view.chrCustOptions" :key="option.id">
 						<label v-if="!option.is_color_swatch" class="ui-select-label">
 							<span class="select-prefix"><span class="prefix-label">{{ option.label }}:</span> <span class="prefix-value">{{ $core.view.optionToChoices.get(option.id)?.find(c => c.id === $core.view.chrCustActiveChoices.find(ac => ac.optionID === option.id)?.choiceID)?.label }}</span></span>
@@ -3242,6 +3265,7 @@ module.exports = {
 			this.$core.view.$watch('config.chrIncludeBaseClothing', () => refresh_character_appearance(this.$core)),
 			this.$core.view.$watch('config.chrIsDemonHunter', () => refresh_character_appearance(this.$core)),
 			this.$core.view.$watch('chrCustRaceSelection', () => update_chr_model_list(this.$core)),
+			this.$core.view.$watch('config.chrModelDefinition', () => update_chr_model_list(this.$core)),
 			this.$core.view.$watch('chrCustModelSelection', () => update_model_selection(this.$core), { deep: true }),
 			this.$core.view.$watch('chrCustOptionSelection', () => update_customization_type(this.$core), { deep: true }),
 			this.$core.view.$watch('chrCustChoiceSelection', () => update_customization_choice(this.$core), { deep: true }),
