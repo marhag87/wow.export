@@ -761,6 +761,52 @@ buffer, every `.bin` exists at its declared length, mesh primitives reference
 accessors of the expected type, and min/max appear exactly where the spec
 requires them.
 
+## Repeat export cost, for live sync (commit c71e5f9c)
+
+After 03635cb3 an export took 10s, which is too slow for live sync to feel
+immediate. An export builds a **fresh model loader**, so nothing was reused
+between exports even though a gear change touches neither the skeleton nor the
+animations:
+
+- all 347 `.anim` files were read out of CASC and parsed again, ~5s;
+- all 347 animation `.bin` files were rewritten, 31MB, byte for byte identical.
+
+Parsed `.anim` payloads are now cached by file id (256MB LRU, cleared on
+`casc-source-changed`), shared by `M2Loader` and `SKELLoader` through one
+function instead of the four copies of that logic they had between them. An
+animation `.bin` already on disk at the expected length is left alone, and since
+`requiredBufferSize` is known before any of it is produced, that check happens up
+front and the buffer's cursor is **advanced instead of filled** - the accessors
+need only offsets and lengths, and nothing ever reads the contents. Also
+collapsed ~300 per-animation log lines per export into one summary line each.
+
+**Warm export 10s to 3s.** Cold is 6s, the difference being the caches filling.
+
+Skipping the float writes is the same index bookkeeping that broke the export in
+the section above, so it was checked rather than trusted: each seek mirrors the
+`byteLength` its own bufferView declares, and the output was compared field by
+field against an export that filled the buffers. All 186384 bufferViews and
+accessors identical, and buffers, animations, skins, nodes and meshes too. Keep a
+known-good `.gltf` around and do this comparison after any change to the writer;
+it is far stronger than "the model still looks right".
+
+### Two things the measurement ruled out
+
+Worth recording because both were plausible and both were wrong:
+
+- **The 36MB of JSON is not the bottleneck**: 162ms to build, 158ms to write. So
+  `.glb` output - one binary file, no JSON text - would buy essentially nothing.
+- **The rest is not I/O.** With the `.anim` reads cached and the `.bin` writes
+  skipped, what remains is CPU in the writer, building 186384 accessor objects.
+  Not filling the buffers was worth ~1s of it, less than the ~2s guessed, so the
+  object churn rather than the float writes is the bulk.
+
+Rough split of the warm 3s: ~1s building the animation structure, ~1.5s textures
+and mesh, ~0.3s JSON. Going further means not building 186384 accessors at all,
+which needs either fewer animations (a filter - rejected, because vtube lets any
+clip in the file be searched and assigned) or caching the built structure between
+exports and re-indexing it, which is the invariant minefield again.
+
 ## Startup performance: DB2 row lookups (commit 56571141)
 
 Opening the Characters tab took ~25s on a warm cache. Nothing was being
@@ -937,8 +983,9 @@ it).
   DB2 row lookups), `27282234` (smaller live sync strip), `78c1eb36` (one pixel
   per block), `665f44a0` (bun lockfile refresh) and `18f70350` (live sync slot
   filter), `7b6b072f` (standard/high definition models), `02dec3a8` (appearance
-  refresh cost), `4c55c9f9` (character source texture reuse) and `03635cb3`
-  (glTF export size and time) pushed to `origin/main`.
+  refresh cost), `4c55c9f9` (character source texture reuse), `03635cb3` (glTF
+  export size and time) and `c71e5f9c` (repeat export cost) pushed to
+  `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
