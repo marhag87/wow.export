@@ -207,12 +207,106 @@ local function bump()
 	redraw()
 end
 
+-- the barbershop is the only place the client exposes the character's current
+-- customization choices, and its UI takes over the screen, so capture the data
+-- when the session opens and report it once the session has closed again.
+local captured_customizations
+local capture_error
+
+local function read_customizations()
+	if type(C_BarberShop) ~= 'table' or type(C_BarberShop.GetAvailableCustomizations) ~= 'function' then
+		return nil, 'this client has no C_BarberShop.GetAvailableCustomizations'
+	end
+
+	local ok, categories = pcall(C_BarberShop.GetAvailableCustomizations)
+	if not ok then
+		return nil, 'GetAvailableCustomizations errored: ' .. tostring(categories)
+	end
+
+	if type(categories) ~= 'table' or #categories == 0 then
+		return nil, 'no customization data returned'
+	end
+
+	local entries = {}
+	for _, category in ipairs(categories) do
+		for _, option in ipairs(category.options or {}) do
+			local choice = option.choices and option.choices[option.currentChoiceIndex]
+			entries[#entries + 1] = {
+				option_name = option.name or '?',
+				option_id = option.id or 0,
+				choice_name = choice and choice.name or '?',
+				choice_id = choice and choice.id or 0,
+			}
+		end
+	end
+
+	if #entries == 0 then
+		return nil, 'customization data contained no options'
+	end
+
+	return entries
+end
+
+-- the data can land a moment after the event, so this is retried a few times.
+local function capture_customizations()
+	local entries, err = read_customizations()
+	if not entries then
+		capture_error = err
+		return false
+	end
+
+	captured_customizations = entries
+	capture_error = nil
+
+	if type(WoWExportLiveSyncDB) ~= 'table' then
+		WoWExportLiveSyncDB = {}
+	end
+	WoWExportLiveSyncDB.customizations = entries
+
+	return true
+end
+
+local function capture_customizations_with_retries()
+	if capture_customizations() then
+		return
+	end
+
+	if type(C_Timer) ~= 'table' or type(C_Timer.After) ~= 'function' then
+		return
+	end
+
+	C_Timer.After(0.5, function()
+		if not capture_customizations() then
+			C_Timer.After(2, capture_customizations)
+		end
+	end)
+end
+
+local function report_customizations()
+	local entries = captured_customizations
+	if not entries and type(WoWExportLiveSyncDB) == 'table' then
+		entries = WoWExportLiveSyncDB.customizations
+	end
+
+	if not entries then
+		print('|cff33ff99wow.export live sync|r: no customizations captured (' .. (capture_error or 'visit a barbershop') .. ')')
+		return
+	end
+
+	print('|cff33ff99wow.export live sync|r: ' .. #entries .. ' customization choices')
+	for _, entry in ipairs(entries) do
+		print(string.format('  %s (%d) = %s (%d)', entry.option_name, entry.option_id, entry.choice_name, entry.choice_id))
+	end
+end
+
 local events = CreateFrame('Frame')
 events:RegisterEvent('PLAYER_ENTERING_WORLD')
 events:RegisterEvent('PLAYER_EQUIPMENT_CHANGED')
 events:RegisterEvent('DISPLAY_SIZE_CHANGED')
 events:RegisterEvent('UI_SCALE_CHANGED')
 events:RegisterUnitEvent('UNIT_INVENTORY_CHANGED', 'player')
+events:RegisterEvent('BARBER_SHOP_OPEN')
+events:RegisterEvent('BARBER_SHOP_CLOSE')
 events:SetScript('OnEvent', function(_, event)
 	if event == 'PLAYER_ENTERING_WORLD' then
 		redraw()
@@ -221,6 +315,11 @@ events:SetScript('OnEvent', function(_, event)
 		if frame then
 			apply_pixel_scale()
 		end
+	elseif event == 'BARBER_SHOP_OPEN' then
+		capture_customizations_with_retries()
+	elseif event == 'BARBER_SHOP_CLOSE' then
+		-- chat is reachable again now that the barbershop UI has gone away
+		report_customizations()
 	else
 		bump()
 	end
@@ -234,6 +333,8 @@ SlashCmdList.WOWEXPORTLIVESYNC = function(msg)
 	elseif msg == 'show' then
 		if frame then frame:Show() end
 		print('|cff33ff99wow.export live sync|r: strip shown')
+	elseif msg == 'cust' then
+		report_customizations()
 	else
 		bump()
 		local parts = {}
