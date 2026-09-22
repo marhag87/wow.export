@@ -692,6 +692,75 @@ archive indices and keys in the worker too. Half the remaining hitch for a worke
 pool, a request queue and a fallback path - not worth it while the pause only
 happens once per face.
 
+## glTF export size and time (commit 03635cb3)
+
+A dressed Tauren on Classic Forever exported an **83.8MB `.gltf` in 21 seconds**.
+
+The model carries **347 animations**. The JSON is not the animation data - that is
+31MB of `.bin` - it is the *index*: two accessors per bone track (timestamps and
+values), 186392 of them, plus a sampler and a channel each, 93184 tracks in all,
+~269 per animation. A track of 21 keyframes is 252 bytes of floats and was costing
+~900 bytes of JSON to describe. The index was 2.7x the size of the data.
+
+Three quarters of that was avoidable, and it is now 35.6MB in 10s:
+
+| | |
+| --- | --- |
+| as written, tab indented | 83.8MB |
+| minified | 58.7MB |
+| minified, no names, min/max only where required | **35.6MB** |
+
+- **`min`/`max` on every accessor.** glTF requires them only on POSITION
+  attributes and animation sampler *inputs* - half of them. The other 93192 are
+  sampler outputs carrying 6-8 full-precision doubles (`-0.7191197872161865` for
+  a float32 that holds ~7 significant digits). The writer also *computed* min and
+  max across every keyframe of every bone of all 347 animations to produce
+  numbers it then did not write, which is where most of the time saving came
+  from.
+- **Tab indentation**: 25MB of whitespace over 5.3 million lines. The glb path
+  already minified.
+- **Names**: every animation accessor and its bufferView carried the same string
+  (`TRANS_VALUES_1_241`), 186381 times.
+
+Dropping the names broke a dependency worth knowing about: the glb path found
+animation bufferViews by testing `bufferView.name` for `TRANS_`/`ROT_`/`SCALE_`
+prefixes and parsing the animation index back out of the string. It now tracks
+them by index as they are created.
+
+### The bufferView collapse that broke the export
+
+Every accessor had **its own** bufferView at `byteOffset: 0`, hence 186392 of
+them and 14MB of JSON. Accessors can share a bufferView and index into it with
+their own `byteOffset`, so collapsing them to one per animation buffer took the
+file to 28.3MB - and produced a mangled model in Unity.
+
+`GLTFWriter` has an unwritten invariant that **accessor index equals bufferView
+index**:
+
+- `writeData(index, ...)` indexes `root.accessors[index]` *and*
+  `root.bufferViews[index]` with the one number;
+- `add_buffered_accessor` stores a bufferView index into `primitive_attributes`,
+  which glTF reads as an accessor reference;
+- the UV loop passes a bufferView index into `writeData`.
+
+That holds only while the two arrays stay in lockstep. With 186392 views
+collapsed to 347, mesh primitives resolved to animation accessors, and UV data
+was written into accessor 352. Reverted; the per-accessor bufferView is back,
+with a comment at each site saying why it cannot be collapsed. The other savings
+do not touch indices and stayed.
+
+The remaining ~7MB is still available, but only after those three call sites
+reference accessors and bufferViews explicitly. That is its own change with its
+own verification, not a rider on this one.
+
+**Checking the output.** A structural pass over the exported file catches this
+class of bug immediately - it found the corruption before the model was even
+looked at. Worth repeating after any change to the writer: every accessor fits
+its bufferView and is aligned to its component size, every bufferView fits its
+buffer, every `.bin` exists at its declared length, mesh primitives reference
+accessors of the expected type, and min/max appear exactly where the spec
+requires them.
+
 ## Startup performance: DB2 row lookups (commit 56571141)
 
 Opening the Characters tab took ~25s on a warm cache. Nothing was being
@@ -868,8 +937,8 @@ it).
   DB2 row lookups), `27282234` (smaller live sync strip), `78c1eb36` (one pixel
   per block), `665f44a0` (bun lockfile refresh) and `18f70350` (live sync slot
   filter), `7b6b072f` (standard/high definition models), `02dec3a8` (appearance
-  refresh cost) and `4c55c9f9` (character source texture reuse) pushed to
-  `origin/main`.
+  refresh cost), `4c55c9f9` (character source texture reuse) and `03635cb3`
+  (glTF export size and time) pushed to `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
