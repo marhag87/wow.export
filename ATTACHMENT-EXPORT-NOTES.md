@@ -638,6 +638,60 @@ with devtools open.
 
 A refresh now finishes inside a second.
 
+### What the per-phase timing showed next (commit 4c55c9f9)
+
+Getting to the bottom of the rest took instrumentation rather than reasoning, and
+the guesses along the way were wrong twice, so the numbers are worth keeping.
+`refresh_character_appearance` logs each phase, and anything slow logs itself:
+
+```
+Character appearance refresh complete (geosets 2ms, textures 750ms, skinned 0ms, equipment 0ms)
+Material 1 (1024x1024): 1ms composite, 36ms read back, 1ms upload to 1 slot(s)
+Slow character texture 8284701: 98ms read, 127ms decode
+```
+
+All of it is in `update_textures`; geosets, skinned models and equipment are
+0-2ms. Within that, the materials are *not* the cost - 1-3ms to composite, 9-36ms
+to read back, 1-4ms to upload, and to one texture slot each, so the suspicion
+that `overrideTextureTypeWithPixels` was uploading to several slots was wrong.
+
+The cost was a level down: `loadTexture` created a fresh GL texture and uploaded
+the source pixels **on every call**, so every refresh re-uploaded all ~16 of the
+character's source textures - and nothing ever deleted the old ones. `reset()`
+cleared the target list only, and `dispose()` relied on losing the context, so
+that was also a leak growing for the life of the character. They are now kept per
+material, keyed by file, and freed in `dispose()`.
+
+Two smaller items in the same commit: a material whose composite has not changed
+since it last went to the GPU is not read back and uploaded again (it is still
+recomposited, because its canvas is what the texture preview and export read, and
+`reset()` clears it); and `readPixels` is flipped a row at a time instead of a
+pixel at a time, same output, 15ms to 6ms on a 2048x1024 material.
+
+### Remaining: a hitch on a face not seen before
+
+**Cosmetic, not breaking - left as is.** Each face option has its own baked
+texture, so the first time one is viewed it is genuine new work: 60-100ms to read
+out of CASC plus up to 127ms to decode the BLP, both on the thread that draws the
+viewport, so the animation visibly pauses. Revisiting a face costs ~70ms, nearly
+all of it the material read back.
+
+| | per option change |
+| --- | --- |
+| originally | 18000-36000ms |
+| after coalescing (02dec3a8) | 2000-4000ms |
+| face already seen | ~70ms |
+| face seen for the first time | ~150-260ms |
+
+The next step, if it ever matters, is moving the BLP decode to a `worker_threads`
+worker as `src/js/workers/cache-collector.js` already does: `blp.js` pulls in only
+`BufferWrapper`, `PNGWriter` and `webp-wasm`, no app singletons, so the file bytes
+can be transferred in and the pixels transferred back. That would take the ~127ms
+decode off the main thread but not the 60-100ms CASC read, which would need the
+archive indices and keys in the worker too. Half the remaining hitch for a worker
+pool, a request queue and a fallback path - not worth it while the pause only
+happens once per face.
+
 ## Startup performance: DB2 row lookups (commit 56571141)
 
 Opening the Characters tab took ~25s on a warm cache. Nothing was being
@@ -813,8 +867,9 @@ it).
   `e849d4f9` (cloak textures), `8e43c888` (live sync), `56571141` (indexed
   DB2 row lookups), `27282234` (smaller live sync strip), `78c1eb36` (one pixel
   per block), `665f44a0` (bun lockfile refresh) and `18f70350` (live sync slot
-  filter), `7b6b072f` (standard/high definition models) and `02dec3a8`
-  (appearance refresh cost) pushed to `origin/main`.
+  filter), `7b6b072f` (standard/high definition models), `02dec3a8` (appearance
+  refresh cost) and `4c55c9f9` (character source texture reuse) pushed to
+  `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
