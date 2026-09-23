@@ -5,28 +5,39 @@
 
 /**
  * Decoder for the pixel strip drawn by the WoWExportLiveSync addon, which encodes
- * the player's equipped item IDs so they can be read off the screen.
+ * the player's equipped item IDs and customization choices so they can be read
+ * off the screen.
  *
  * Layout, left to right, one block each:
  *
  *   5 marker blocks : black, white, red, green, blue
- *   44 data blocks  : 6 bits each, 2 bits per channel, most significant first,
+ *   129 data blocks : 6 bits each, 2 bits per channel, most significant first,
  *                     channel level = value * 85
  *   2 end markers   : white, black
  *
  * Payload bits, most significant first: 4 format version, 8 change counter,
- * 13 slots x 18 bits (game inventory slot IDs, 0 for empty), 16 CRC-16/CCITT-FALSE
- * over the preceding bits padded to whole bytes.
+ * 13 slots x 18 bits (game inventory slot IDs, 0 for empty), 4 customization
+ * count, 14 customizations x (16 bit option ID + 20 bit choice ID), 16
+ * CRC-16/CCITT-FALSE over the preceding bits padded to whole bytes.
+ *
+ * A customization count of zero means the addon does not know the character's
+ * choices, which it only learns from a barbershop visit. That is not the same
+ * as a character with no customizations, so callers must leave their own
+ * choices alone rather than clearing them.
  *
  * See addons/live-sync/ for the addon and a standalone decoder for PNG files.
  */
 
 const MARKER_COUNT = 5;
-const DATA_BLOCKS = 44;
+const DATA_BLOCKS = 129;
 const END_MARKER_COUNT = 2;
 const TOTAL_BLOCKS = MARKER_COUNT + DATA_BLOCKS + END_MARKER_COUNT;
 const SLOT_BITS = 18;
-const FORMAT_VERSION = 2;
+const FORMAT_VERSION = 3;
+const CUST_SLOTS = 14;
+const CUST_COUNT_BITS = 4;
+const CUST_OPTION_BITS = 16;
+const CUST_CHOICE_BITS = 20;
 
 const MARKER_COLOURS = [
 	[0, 0, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0], [0, 0, 255]
@@ -206,7 +217,7 @@ function* find_strips(view, hint) {
 
 /**
  * Read the payload from a located strip.
- * @returns {object} - { version, counter, items, crc_ok }
+ * @returns {object} - { version, counter, items, customizations, crc_ok }
  */
 function read_payload(view, strip) {
 	const { x, y, pitch } = strip;
@@ -240,6 +251,22 @@ function read_payload(view, strip) {
 		ofs += SLOT_BITS;
 	}
 
+	// null rather than an empty array: the addon has not been told the choices,
+	// which is different from a character that has none
+	const cust_count = take(ofs, CUST_COUNT_BITS);
+	ofs += CUST_COUNT_BITS;
+
+	const customizations = cust_count > 0 ? [] : null;
+	for (let i = 0; i < CUST_SLOTS; i++) {
+		const option_id = take(ofs, CUST_OPTION_BITS);
+		const choice_id = take(ofs + CUST_OPTION_BITS, CUST_CHOICE_BITS);
+		ofs += CUST_OPTION_BITS + CUST_CHOICE_BITS;
+
+		// unused slots, and ids the addon could not fit, are sent as zero
+		if (i < cust_count && option_id > 0 && choice_id > 0)
+			customizations.push({ optionID: option_id, choiceID: choice_id });
+	}
+
 	// CRC over the payload bits, zero padded to whole bytes. The padding must be
 	// zeroes, not the CRC bits that follow, which is what the addon hashes.
 	let crc = 0xffff;
@@ -253,7 +280,7 @@ function read_payload(view, strip) {
 			crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
 	}
 
-	return { version, counter, items, crc_ok: crc === take(ofs, 16) };
+	return { version, counter, items, customizations, crc_ok: crc === take(ofs, 16) };
 }
 
 /**
@@ -263,7 +290,7 @@ function read_payload(view, strip) {
  * @param {number} width
  * @param {number} height
  * @param {object} [hint] - strip position from a previous frame
- * @returns {object|null} - { version, counter, items, strip }
+ * @returns {object|null} - { version, counter, items, customizations, strip }
  */
 function decode_frame(pixels, width, height, hint) {
 	const view = new PixelView(pixels, width, height);
@@ -271,7 +298,7 @@ function decode_frame(pixels, width, height, hint) {
 	for (const strip of find_strips(view, hint)) {
 		const payload = read_payload(view, strip);
 		if (payload.crc_ok && payload.version === FORMAT_VERSION)
-			return { version: payload.version, counter: payload.counter, items: payload.items, strip };
+			return { version: payload.version, counter: payload.counter, items: payload.items, customizations: payload.customizations, strip };
 	}
 
 	return null;

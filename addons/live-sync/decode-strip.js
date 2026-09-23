@@ -123,3 +123,11 @@ console.log(`strip at ${result.strip.x},${result.strip.y}, pitch ${result.strip.
 console.log(`format version ${result.version} (expected ${FORMAT_VERSION}), counter ${result.counter}`);
 for (const slot_id of SLOT_IDS)
 	console.log(`  ${String(SLOT_NAMES[slot_id]).padEnd(10)} ${result.items.get(slot_id) || '-'}`);
+
+if (result.customizations === null) {
+	console.log('customizations: not known (the addon learns them from a barbershop visit)');
+} else {
+	console.log(`customizations: ${result.customizations.length}`);
+	for (const { optionID, choiceID } of result.customizations)
+		console.log(`  option ${String(optionID).padEnd(8)} choice ${choiceID}`);
+}

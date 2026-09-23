@@ -7,7 +7,7 @@
 
 	  5 marker blocks : black, white, red, green, blue
 	                    (locate the strip, and calibrate black/white levels)
-	  44 data blocks  : 6 bits each, 2 bits per channel, most significant first
+	  129 data blocks : 6 bits each, 2 bits per channel, most significant first
 	                    channel level = value * 85 (0, 85, 170, 255)
 	  2 end markers   : white, black
 	                    the distance from the first block to these gives the exact
@@ -15,12 +15,14 @@
 
 	Data bits, most significant first:
 
-	  4   format version (currently 2)
+	  4   format version (currently 3)
 	  8   change counter, wraps at 256
 	  234 13 slots x 18 bits, item ID or 0 for an empty slot
+	  4   customization count, 0 when no barbershop visit has revealed them
+	  504 14 customizations x (16 bit option ID + 20 bit choice ID), unused zero
 	  16  CRC-16/CCITT-FALSE over the preceding bits, padded to whole bytes
 
-	That is 262 bits in 264, so the last 2 bits are spare.
+	That is 770 bits in 774, so the last 4 bits are spare.
 
 	Slots are in SLOT_IDS order below, matching the game's inventory slot IDs.
 
@@ -53,10 +55,22 @@ local END_MARKERS = {
 	{ 0, 0, 0 },
 }
 
-local FORMAT_VERSION = 2
+local FORMAT_VERSION = 3
 local SLOT_BITS = 18
 local SLOT_MAX = 2 ^ SLOT_BITS
-local DATA_BLOCKS = 44
+local DATA_BLOCKS = 129
+
+-- Customization choices are only known after a barbershop visit, so the count
+-- doubles as a "not known" flag at zero. The slots are a fixed block whether
+-- they are filled or not, which keeps the strip one width and the decoder
+-- free of a variable length field. 14 covers every race on this client with
+-- room to spare - the most seen so far is 7 - and fits the 4 bit count.
+local CUST_SLOTS = 14
+local CUST_COUNT_BITS = 4
+local CUST_OPTION_BITS = 16
+local CUST_CHOICE_BITS = 20
+local CUST_OPTION_MAX = 2 ^ CUST_OPTION_BITS
+local CUST_CHOICE_MAX = 2 ^ CUST_CHOICE_BITS
 
 -- game inventory slot IDs, in the order they are packed into the payload
 local SLOT_IDS = {
@@ -78,6 +92,13 @@ local SLOT_IDS = {
 local counter = 0
 local blocks = {}
 local frame
+
+-- committed is the character's applied appearance and broadcast is what the
+-- strip carries; they are the same except while a barbershop session is open,
+-- when the strip holds still. Both are nil until a visit reveals them. See the
+-- barbershop section further down.
+local committed_customizations
+local broadcast_customizations
 
 --- CRC-16/CCITT-FALSE over a byte array.
 local function crc16(bytes)
@@ -117,6 +138,32 @@ local function build_payload()
 		end
 
 		push_bits(bits, item_id, SLOT_BITS)
+	end
+
+	-- customization choices, when a barbershop visit has revealed them. a count
+	-- of zero means not known, which wow.export leaves alone rather than reading
+	-- as "this character has no customizations"
+	local entries = broadcast_customizations or {}
+	local count = #entries
+	if count > CUST_SLOTS then
+		count = CUST_SLOTS
+	end
+
+	push_bits(bits, count, CUST_COUNT_BITS)
+
+	for i = 1, CUST_SLOTS do
+		local entry = i <= count and entries[i] or nil
+		local option_id, choice_id = 0, 0
+
+		-- an id that does not fit is sent as zero rather than as its low bits,
+		-- which would name a different option or choice
+		if entry and entry.option_id < CUST_OPTION_MAX and entry.choice_id < CUST_CHOICE_MAX then
+			option_id = entry.option_id
+			choice_id = entry.choice_id
+		end
+
+		push_bits(bits, option_id, CUST_OPTION_BITS)
+		push_bits(bits, choice_id, CUST_CHOICE_BITS)
 	end
 
 	-- CRC over the bits so far, zero padded to whole bytes
@@ -207,11 +254,31 @@ local function bump()
 	redraw()
 end
 
--- the barbershop is the only place the client exposes the character's current
--- customization choices, and its UI takes over the screen, so capture the data
--- when the session opens and report it once the session has closed again.
-local captured_customizations
+-- The barbershop is the only place the client exposes which customization
+-- choices a character currently has, and the data is live only for as long as
+-- the session lasts. What is on the strip is therefore whatever the last visit
+-- revealed, kept per character in saved variables so logging over does not
+-- broadcast the previous one's appearance.
 local capture_error
+local session_ticker
+local session_customizations
+local session_has_changes
+
+-- Only the appearance that is applied when the chair is left reaches the strip,
+-- so what is on screen mid-session is tracked but not broadcast. The session has
+-- to be polled to track it at all: there is no event for moving through options,
+-- and the data is gone by the time the session closes.
+local SESSION_POLL = 0.2
+
+local function character_key()
+	local name = UnitName('player')
+	if not name or name == '' then
+		return nil
+	end
+
+	local realm = GetRealmName and GetRealmName() or ''
+	return name .. '-' .. (realm or '')
+end
 
 local function read_customizations()
 	if type(C_BarberShop) ~= 'table' or type(C_BarberShop.GetAvailableCustomizations) ~= 'function' then
@@ -244,52 +311,134 @@ local function read_customizations()
 		return nil, 'customization data contained no options'
 	end
 
+	-- a stable order keeps the strip from changing when the client reorders
+	-- its categories, which would otherwise read as an appearance change
+	table.sort(entries, function(a, b) return a.option_id < b.option_id end)
+
 	return entries
 end
 
--- the data can land a moment after the event, so this is retried a few times.
-local function capture_customizations()
-	local entries, err = read_customizations()
-	if not entries then
-		capture_error = err
+local function same_customizations(a, b)
+	if a == b then
+		return true
+	end
+
+	if not a or not b or #a ~= #b then
 		return false
 	end
 
-	captured_customizations = entries
-	capture_error = nil
-
-	if type(WoWExportLiveSyncDB) ~= 'table' then
-		WoWExportLiveSyncDB = {}
+	for i = 1, #a do
+		if a[i].option_id ~= b[i].option_id or a[i].choice_id ~= b[i].choice_id then
+			return false
+		end
 	end
-	WoWExportLiveSyncDB.customizations = entries
 
 	return true
 end
 
-local function capture_customizations_with_retries()
-	if capture_customizations() then
+--- Put `entries` on the strip, bumping the counter when they differ.
+local function broadcast_customizations_set(entries)
+	if same_customizations(entries, broadcast_customizations) then
 		return
 	end
 
-	if type(C_Timer) ~= 'table' or type(C_Timer.After) ~= 'function' then
+	broadcast_customizations = entries
+	bump()
+end
+
+local function commit_customizations(entries)
+	committed_customizations = entries
+
+	local key = character_key()
+	if not key then
 		return
 	end
 
-	C_Timer.After(0.5, function()
-		if not capture_customizations() then
-			C_Timer.After(2, capture_customizations)
-		end
-	end)
+	if type(WoWExportLiveSyncDB) ~= 'table' then
+		WoWExportLiveSyncDB = {}
+	end
+
+	if type(WoWExportLiveSyncDB.characters) ~= 'table' then
+		WoWExportLiveSyncDB.characters = {}
+	end
+
+	WoWExportLiveSyncDB.characters[key] = entries
+end
+
+--- Restore this character's last known appearance, if a visit ever revealed it.
+local function load_committed_customizations()
+	local key = character_key()
+	if not key or type(WoWExportLiveSyncDB) ~= 'table' or type(WoWExportLiveSyncDB.characters) ~= 'table' then
+		return
+	end
+
+	committed_customizations = WoWExportLiveSyncDB.characters[key]
+	broadcast_customizations_set(committed_customizations)
+end
+
+--- Whether the chair holds changes that have not been paid for.
+local function has_pending_changes()
+	if type(C_BarberShop) ~= 'table' or type(C_BarberShop.HasAnyChanges) ~= 'function' then
+		return false
+	end
+
+	local ok, pending = pcall(C_BarberShop.HasAnyChanges)
+	return ok and pending or false
+end
+
+local function poll_session()
+	local entries, err = read_customizations()
+	if not entries then
+		capture_error = err
+		return
+	end
+
+	capture_error = nil
+	session_customizations = entries
+	session_has_changes = has_pending_changes()
+end
+
+local function start_session()
+	session_customizations = nil
+	session_has_changes = false
+	poll_session()
+
+	if type(C_Timer) ~= 'table' or type(C_Timer.NewTicker) ~= 'function' then
+		return
+	end
+
+	if session_ticker then
+		session_ticker:Cancel()
+	end
+
+	session_ticker = C_Timer.NewTicker(SESSION_POLL, poll_session)
+end
+
+local function end_session()
+	if session_ticker then
+		session_ticker:Cancel()
+		session_ticker = nil
+	end
+
+	-- What is on screen with nothing pending has been paid for, so that is the
+	-- character's appearance from here. Pending changes are discarded by leaving
+	-- the chair, so those keep whatever was last committed - including the very
+	-- first visit, which commits the appearance the character arrived with.
+	if session_customizations and not session_has_changes then
+		commit_customizations(session_customizations)
+	end
+
+	session_customizations = nil
+	session_has_changes = false
+
+	broadcast_customizations_set(committed_customizations)
 end
 
 local function report_customizations()
-	local entries = captured_customizations
-	if not entries and type(WoWExportLiveSyncDB) == 'table' then
-		entries = WoWExportLiveSyncDB.customizations
-	end
+	local entries = broadcast_customizations
 
 	if not entries then
-		print('|cff33ff99wow.export live sync|r: no customizations captured (' .. (capture_error or 'visit a barbershop') .. ')')
+		print('|cff33ff99wow.export live sync|r: no customizations known (' .. (capture_error or 'visit a barbershop') .. ')')
 		return
 	end
 
@@ -307,8 +456,12 @@ events:RegisterEvent('UI_SCALE_CHANGED')
 events:RegisterUnitEvent('UNIT_INVENTORY_CHANGED', 'player')
 events:RegisterEvent('BARBER_SHOP_OPEN')
 events:RegisterEvent('BARBER_SHOP_CLOSE')
+
+-- not every client build has this one, and registering an unknown event errors
+pcall(events.RegisterEvent, events, 'BARBER_SHOP_APPEARANCE_APPLIED')
 events:SetScript('OnEvent', function(_, event)
 	if event == 'PLAYER_ENTERING_WORLD' then
+		load_committed_customizations()
 		redraw()
 	elseif event == 'DISPLAY_SIZE_CHANGED' or event == 'UI_SCALE_CHANGED' then
 		-- a unit is a different number of pixels now, so re-derive the scale
@@ -316,8 +469,16 @@ events:SetScript('OnEvent', function(_, event)
 			apply_pixel_scale()
 		end
 	elseif event == 'BARBER_SHOP_OPEN' then
-		capture_customizations_with_retries()
+		start_session()
+	elseif event == 'BARBER_SHOP_APPEARANCE_APPLIED' then
+		-- catches a change that is paid for and then changed again and
+		-- cancelled, which would otherwise revert past it on the way out
+		if session_customizations then
+			commit_customizations(session_customizations)
+		end
 	elseif event == 'BARBER_SHOP_CLOSE' then
+		end_session()
+
 		-- chat is reachable again now that the barbershop UI has gone away
 		report_customizations()
 	else

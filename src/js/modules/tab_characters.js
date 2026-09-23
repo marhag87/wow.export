@@ -2059,6 +2059,10 @@ const live_sync = new LiveSync();
 // set while live sync applies equipment, so the watcher does not refresh a second time
 let live_sync_applying = false;
 
+// so the "these choices are not this character's" warning is written once per
+// sync rather than on every poll
+let live_sync_customizations_warned = false;
+
 function live_sync_status(core, text) {
 	core.view.chrLiveSyncStatus = text;
 }
@@ -2074,6 +2078,38 @@ function on_live_sync_payload(core, payload) {
 		log.write('live sync failed: %s', e.message);
 		live_sync_status(core, 'failed: ' + e.message);
 	});
+}
+
+/**
+ * Work out which of the strip's customization choices this model should take.
+ *
+ * The strip carries the logged-in character's choices, which mean nothing on a
+ * different race or model, so a choice is only applied when the loaded model
+ * has that option and that choice within it.
+ *
+ * @returns {object} - { pending, valid } - the choices to change, and how many
+ * of the strip's choices belong to this model at all
+ */
+function live_sync_pending_customizations(core, customizations) {
+	if (!customizations || customizations.length === 0)
+		return { pending: [], valid: 0 };
+
+	const pending = [];
+	let valid = 0;
+
+	for (const { optionID, choiceID } of customizations) {
+		const available = DBCharacterCustomization.get_choices_for_option(optionID);
+		if (!available || !available.some(choice => choice.id === choiceID))
+			continue;
+
+		valid++;
+
+		const existing = core.view.chrCustActiveChoices.find(choice => choice.optionID === optionID);
+		if (!existing || existing.choiceID !== choiceID)
+			pending.push({ optionID, choiceID });
+	}
+
+	return { pending, valid };
 }
 
 async function apply_live_sync_payload(core, payload) {
@@ -2098,18 +2134,31 @@ async function apply_live_sync_payload(core, payload) {
 	const keys = new Set([...Object.keys(current), ...Object.keys(equipment)]);
 	const changed = [...keys].some(slot_id => current[slot_id] !== equipment[slot_id]);
 
-	if (!changed) {
+	// a null customization list means the addon has not been told the choices,
+	// which only a barbershop visit reveals; the loaded ones are left alone
+	const { pending, valid } = live_sync_pending_customizations(core, payload.customizations);
+
+	if (payload.customizations?.length > 0 && valid === 0 && !live_sync_customizations_warned) {
+		log.write('Live sync ignoring %d customization choices: none belong to the loaded model', payload.customizations.length);
+		live_sync_customizations_warned = true;
+	}
+
+	if (!changed && pending.length === 0) {
 		live_sync_status(core, util.format('in sync (change %d)', payload.counter));
 		return;
 	}
 
-	log.write('Live sync applying equipment from change %d', payload.counter);
+	log.write('Live sync applying change %d (%d customization choices)', payload.counter, pending.length);
 	live_sync_status(core, util.format('applying change %d...', payload.counter));
 
 	live_sync_applying = true;
 	try {
 		core.view.chrEquippedItems = equipment;
 		core.view.chrEquippedItemSkins = {};
+
+		for (const { optionID, choiceID } of pending)
+			update_choice_for_option(core, optionID, choiceID);
+
 		await request_character_refresh(core, true);
 	} finally {
 		// let the watcher's own tick pass before it is allowed to refresh again
@@ -2141,6 +2190,9 @@ async function set_live_sync(core, enabled) {
 		live_sync_status(core, '');
 		return;
 	}
+
+	// a different model may be loaded than the last run warned about
+	live_sync_customizations_warned = false;
 
 	try {
 		live_sync.start(
