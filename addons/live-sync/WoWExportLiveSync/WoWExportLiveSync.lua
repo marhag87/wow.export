@@ -7,7 +7,7 @@
 
 	  5 marker blocks : black, white, red, green, blue
 	                    (locate the strip, and calibrate black/white levels)
-	  129 data blocks : 6 bits each, 2 bits per channel, most significant first
+	  162 data blocks : 6 bits each, 2 bits per channel, most significant first
 	                    channel level = value * 85 (0, 85, 170, 255)
 	  2 end markers   : white, black
 	                    the distance from the first block to these gives the exact
@@ -15,14 +15,16 @@
 
 	Data bits, most significant first:
 
-	  4   format version (currently 3)
+	  4   format version (currently 4)
 	  8   change counter, wraps at 256
+	  5   character name length in bytes, 0 when it does not fit
+	  192 character name, 24 bytes of UTF-8, zero padded
 	  234 13 slots x 18 bits, item ID or 0 for an empty slot
 	  4   customization count, 0 when no barbershop visit has revealed them
 	  504 14 customizations x (16 bit option ID + 20 bit choice ID), unused zero
 	  16  CRC-16/CCITT-FALSE over the preceding bits, padded to whole bytes
 
-	That is 770 bits in 774, so the last 4 bits are spare.
+	That is 967 bits in 972, so the last 5 bits are spare.
 
 	Slots are in SLOT_IDS order below, matching the game's inventory slot IDs.
 
@@ -55,10 +57,17 @@ local END_MARKERS = {
 	{ 0, 0, 0 },
 }
 
-local FORMAT_VERSION = 3
+local FORMAT_VERSION = 4
 local SLOT_BITS = 18
 local SLOT_MAX = 2 ^ SLOT_BITS
-local DATA_BLOCKS = 129
+local DATA_BLOCKS = 162
+
+-- The character's name, so wow.export can refuse to dress a saved character in
+-- someone else's gear. Names are at most 12 characters, and 24 bytes holds 12
+-- two byte UTF-8 characters, which covers accented Latin names. A longer name is
+-- sent as length 0, which the app treats as not matching anything.
+local NAME_LENGTH_BITS = 5
+local NAME_BYTES = 24
 
 -- Customization choices are only known after a barbershop visit, so the count
 -- doubles as a "not known" flag at zero. The slots are a fixed block whether
@@ -127,6 +136,17 @@ local function build_payload()
 	local bits = {}
 	push_bits(bits, FORMAT_VERSION, 4)
 	push_bits(bits, counter, 8)
+
+	-- # is the length in bytes, which is what UTF-8 needs here
+	local name = UnitName('player') or ''
+	if #name > NAME_BYTES then
+		name = ''
+	end
+
+	push_bits(bits, #name, NAME_LENGTH_BITS)
+	for i = 1, NAME_BYTES do
+		push_bits(bits, i <= #name and string.byte(name, i) or 0, 8)
+	end
 
 	for _, slot_id in ipairs(SLOT_IDS) do
 		local item_id = GetInventoryItemID('player', slot_id) or 0

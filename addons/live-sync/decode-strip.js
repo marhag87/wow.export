@@ -121,6 +121,7 @@ if (!result) {
 
 console.log(`strip at ${result.strip.x},${result.strip.y}, pitch ${result.strip.pitch.toFixed(4)}px`);
 console.log(`format version ${result.version} (expected ${FORMAT_VERSION}), counter ${result.counter}`);
+console.log(`character ${result.name ?? "(name did not fit)"}`);
 for (const slot_id of SLOT_IDS)
 	console.log(`  ${String(SLOT_NAMES[slot_id]).padEnd(10)} ${result.items.get(slot_id) || '-'}`);
 

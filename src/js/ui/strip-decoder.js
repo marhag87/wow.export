@@ -5,18 +5,20 @@
 
 /**
  * Decoder for the pixel strip drawn by the WoWExportLiveSync addon, which encodes
- * the player's equipped item IDs and customization choices so they can be read
- * off the screen.
+ * the player's name, equipped item IDs and customization choices so they can be
+ * read off the screen.
  *
  * Layout, left to right, one block each:
  *
  *   5 marker blocks : black, white, red, green, blue
- *   129 data blocks : 6 bits each, 2 bits per channel, most significant first,
+ *   162 data blocks : 6 bits each, 2 bits per channel, most significant first,
  *                     channel level = value * 85
  *   2 end markers   : white, black
  *
  * Payload bits, most significant first: 4 format version, 8 change counter,
- * 13 slots x 18 bits (game inventory slot IDs, 0 for empty), 4 customization
+ * 5 character name length in bytes, 24 bytes of UTF-8 character name (zero
+ * padded, length 0 when the name did not fit), 13 slots x 18 bits (game
+ * inventory slot IDs, 0 for empty), 4 customization
  * count, 14 customizations x (16 bit option ID + 20 bit choice ID), 16
  * CRC-16/CCITT-FALSE over the preceding bits padded to whole bytes.
  *
@@ -29,11 +31,13 @@
  */
 
 const MARKER_COUNT = 5;
-const DATA_BLOCKS = 129;
+const DATA_BLOCKS = 162;
 const END_MARKER_COUNT = 2;
 const TOTAL_BLOCKS = MARKER_COUNT + DATA_BLOCKS + END_MARKER_COUNT;
 const SLOT_BITS = 18;
-const FORMAT_VERSION = 3;
+const FORMAT_VERSION = 4;
+const NAME_LENGTH_BITS = 5;
+const NAME_BYTES = 24;
 const CUST_SLOTS = 14;
 const CUST_COUNT_BITS = 4;
 const CUST_OPTION_BITS = 16;
@@ -217,7 +221,7 @@ function* find_strips(view, hint) {
 
 /**
  * Read the payload from a located strip.
- * @returns {object} - { version, counter, items, customizations, crc_ok }
+ * @returns {object} - { version, counter, name, items, customizations, crc_ok }
  */
 function read_payload(view, strip) {
 	const { x, y, pitch } = strip;
@@ -243,9 +247,21 @@ function read_payload(view, strip) {
 
 	const version = take(0, 4);
 	const counter = take(4, 8);
+	let ofs = 12;
+
+	// null when the addon could not fit the name, which must not match anyone
+	const name_length = take(ofs, NAME_LENGTH_BITS);
+	ofs += NAME_LENGTH_BITS;
+
+	const name_bytes = [];
+	for (let i = 0; i < NAME_BYTES; i++) {
+		name_bytes.push(take(ofs, 8));
+		ofs += 8;
+	}
+
+	const name = name_length > 0 && name_length <= NAME_BYTES ? Buffer.from(name_bytes.slice(0, name_length)).toString('utf8') : null;
 
 	const items = new Map();
-	let ofs = 12;
 	for (const slot_id of SLOT_IDS) {
 		items.set(slot_id, take(ofs, SLOT_BITS));
 		ofs += SLOT_BITS;
@@ -280,7 +296,7 @@ function read_payload(view, strip) {
 			crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
 	}
 
-	return { version, counter, items, customizations, crc_ok: crc === take(ofs, 16) };
+	return { version, counter, name, items, customizations, crc_ok: crc === take(ofs, 16) };
 }
 
 /**
@@ -290,7 +306,7 @@ function read_payload(view, strip) {
  * @param {number} width
  * @param {number} height
  * @param {object} [hint] - strip position from a previous frame
- * @returns {object|null} - { version, counter, items, customizations, strip }
+ * @returns {object|null} - { version, counter, name, items, customizations, strip }
  */
 function decode_frame(pixels, width, height, hint) {
 	const view = new PixelView(pixels, width, height);
@@ -298,7 +314,7 @@ function decode_frame(pixels, width, height, hint) {
 	for (const strip of find_strips(view, hint)) {
 		const payload = read_payload(view, strip);
 		if (payload.crc_ok && payload.version === FORMAT_VERSION)
-			return { version: payload.version, counter: payload.counter, items: payload.items, customizations: payload.customizations, strip };
+			return { version: payload.version, counter: payload.counter, name: payload.name, items: payload.items, customizations: payload.customizations, strip };
 	}
 
 	return null;

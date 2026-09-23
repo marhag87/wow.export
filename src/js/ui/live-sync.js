@@ -41,7 +41,7 @@ class LiveSync {
 	/**
 	 * Start sampling the screen.
 	 * @param {number} interval_ms
-	 * @param {function} on_payload - called with { counter, items } when the CRC passes
+	 * @param {function} on_payload - called with { counter, name, items, customizations } when the CRC passes
 	 * @param {function} on_status - called with a human-readable status string
 	 */
 	start(interval_ms, on_payload, on_status) {
@@ -157,10 +157,13 @@ class LiveSync {
 	}
 
 	_report(payload, on_payload) {
-		if (payload.counter === this.last_counter)
+		// the counter restarts at zero on every login, so a different character
+		// can arrive with the counter the last one left off at
+		if (payload.counter === this.last_counter && payload.name === this.last_name)
 			return;
 
 		this.last_counter = payload.counter;
+		this.last_name = payload.name;
 		on_payload(payload);
 	}
 }
