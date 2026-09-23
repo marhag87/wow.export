@@ -672,8 +672,12 @@ strip and read by the real decoder: 29 checks at pitches 1, 1.5 and 3, covering
 names (accented, exactly 24 bytes, one over, empty), the real matcher lifted
 from `tab_characters.js`, and the relog case. A second script checks the nine
 constants shared by the addon and decoder agree. There is no Lua runtime here,
-so the addon is only syntax-checked by loading it in game. The harness lived in
-the session scratchpad and is not in the repo.
+so the addon is only syntax-checked by loading it in game.
+
+Both are in the repo as `addons/live-sync/test-strip.js` (commit bc3033ec;
+38 checks). Run `node addons/live-sync/test-strip.js` after any change
+to the wire format. The JS mirror of `build_payload` has to be kept in step with
+the Lua by hand — the constants check catches sizes drifting, not logic.
 
 ## Standard and high definition models (commit 7b6b072f)
 
