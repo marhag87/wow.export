@@ -603,14 +603,77 @@ knowing when reading a mismatch: `currentChoiceIndex` tracks what is on screen,
 so browsing in the chair during the first couple of seconds would be captured
 as the character's appearance.
 
-The store uses a single `customizations` key, so a second character's capture
-overwrites the first. Keying by character name would be needed to hold several.
+The store used a single `customizations` key, so a second character's capture
+overwrote the first; it is keyed by character now (next section).
 
-If this is ever wired into the tab, reading the saved variables file from disk
-looks better than widening the strip: customization only changes at a
-barbershop, seven ~17-bit choice IDs would not fit the 44-block budget
-comfortably, and the tab already applies a full `{optionID, choiceID}` set
-through `chrImportChoices`. The cost is that it only refreshes on reload.
+Reading the saved variables file from disk was considered for getting this into
+the tab, since it avoids widening the strip. It was passed over because saved
+variables only flush on reload, and the aim was for a barbershop change to
+arrive like any gear change. Widening the strip costs only width.
+
+### Customizations on the strip (commit b28a0801)
+
+Format 3, 129 data blocks. After the item slots: a 4 bit count, then 14 fixed
+slots of 16 bit option ID + 20 bit choice ID, unused ones zero. Fixed size keeps
+the strip one width and the decoder free of a variable-length field; 14 covers
+the most options seen on this client (7) with room to spare.
+
+Count 0 means "not known", which the decoder returns as `customizations: null`
+rather than `[]`, and the tab leaves its loaded choices alone. That distinction
+matters: before any barbershop visit every frame would otherwise read as "no
+customizations" and wipe the tab's choices.
+
+Only the appearance applied when the chair is left reaches the strip. During a
+session the addon polls every 0.2s (there is no event for moving through
+options, and the data is gone once the session closes) but does not broadcast.
+On close, if `C_BarberShop.HasAnyChanges()` was false at the last poll, what is
+on screen was paid for and becomes the committed appearance; otherwise the
+changes were discarded by leaving and the previous appearance stays. A first
+ever visit with nothing changed is how the appearance is learned at all.
+`BARBER_SHOP_APPEARANCE_APPLIED` is registered through `pcall` (an unknown event
+errors) and only covers pay, change again, then cancel — without it that case
+would revert past the paid change.
+
+Stored per character (`WoWExportLiveSyncDB.characters["Name-Realm"]`). The old
+flat `customizations` key is not read.
+
+In the tab, a choice is applied only when the loaded model has that option and
+that choice in it, so a Tauren's choices on an Undead are rejected rather than
+half applied, with one log line per sync saying none belonged to the model.
+
+Untested: the Forever barbershop UI errored, then was disabled entirely, so no
+change has ever been made in the chair. Verified only that captured choices
+reach the tab and apply. Commit-on-close, the `HasAnyChanges` discard rule and
+the counter bump after a haircut are unverified.
+
+### Character name on the strip (commit 04393c6a)
+
+Leaving one saved character open while playing another let live sync overwrite
+its gear and customizations. Format 4, 162 data blocks (169×2 px strip): after
+the counter, a 5 bit byte length and 24 bytes of UTF-8 name. 24 bytes holds 12
+two-byte characters, so accented Latin names fit; a longer name is sent with
+length 0 and matches nothing.
+
+When a saved character is loaded (`chrCurrentCharacter`), a frame for anyone
+else is skipped with the status `waiting: the game is on X, Y is loaded`. It
+waits rather than calling `disable_live_sync`, so logging over to the right
+character resumes. Names compare NFC-normalised and case-insensitively. An
+unsaved character has nothing to compare against and takes the strip as before.
+
+Matching is exact, so a saved "HoomFishing" waits while "Hoom" is in game. A
+prefix match or a per-character "follows" name would change that if wanted.
+
+Also fixed: the addon's counter restarts at 0 on each login, and `LiveSync`
+only reported a frame whose counter differed from the last, so a new character
+arriving on the same counter was ignored. Frames are keyed on counter and name.
+
+Tested with a JS mirror of the addon's `build_payload` rendered to a synthetic
+strip and read by the real decoder: 29 checks at pitches 1, 1.5 and 3, covering
+names (accented, exactly 24 bytes, one over, empty), the real matcher lifted
+from `tab_characters.js`, and the relog case. A second script checks the nine
+constants shared by the addon and decoder agree. There is no Lua runtime here,
+so the addon is only syntax-checked by loading it in game. The harness lived in
+the session scratchpad and is not in the repo.
 
 ## Standard and high definition models (commit 7b6b072f)
 
