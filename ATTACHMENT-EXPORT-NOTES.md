@@ -500,7 +500,9 @@ pixels, so on 4K an 8 unit block was 22.5 pixels. The frame is now scaled by
 say, and it re-derives on `UI_SCALE_CHANGED` and `DISPLAY_SIZE_CHANGED`.
 
 **The payload had slack.** Item IDs are 18 bits, not 20: 262143 covers every
-live ID with room over retail's ~240k. 48 data blocks became 44.
+live ID with room over retail's ~240k. 48 data blocks became 44. *(Wrong for
+Forever: its IDs pass 2^18, and slots went back to 20 bits in format 5. See
+"Larger item IDs and surnames".)*
 
 Two bugs surfaced while verifying this with a simulation harness that renders the
 strip, area-averages it down and runs the real decoder:
@@ -678,6 +680,48 @@ Both are in the repo as `addons/live-sync/test-strip.js` (commit bc3033ec;
 38 checks). Run `node addons/live-sync/test-strip.js` after any change
 to the wire format. The JS mirror of `build_payload` has to be kept in step with
 the Lua by hand — the constants check catches sizes drifting, not logic.
+
+### Larger item IDs and surnames (commit 0069098d)
+
+Symptom: Finscale Soles vanished from the model whenever live sync was on.
+
+Cause: item slots were 18 bits (max 262143) on the assumption above, but this
+client has Finscale Soles at **281285**. The addon sends an ID that does not fit
+as 0 rather than its low bits (which would name another item), and 0 reads as an
+empty slot, so the boots were silently stripped. Found by reading the saved
+character's equipment, not from the strip — nothing reported it.
+
+Fix, format 5: item slots are 20 bits (to 1,048,575, about 3.7x the largest ID
+seen). The addon also prints once in chat when an ID still does not fit, naming
+the item and slot, so the failure is no longer silent. The highest item ID on
+this client was not checked (it needs CASC), so 20 bits rests on the one ID seen.
+
+Surnames: Forever requires a surname, and `UnitName` returns first name, space,
+surname ("Bernam Keegan") — confirmed from the app log, where a loaded "Bernam
+Keegan" matched the strip and applied rather than waited. Full names are unique
+across realm types, so the full name is the right identity. The name field was
+sized for one 12 character name (24 bytes) and doubled to 48 bytes with a 6 bit
+length, so a first name, space and surname fit even when accented.
+
+Format 5 is 198 data blocks, 1186 bits in 1188, a 205x2 px strip.
+
+Test additions (41 checks): 281285 in the feet slot and 1048575 in the off hand,
+the mirror copies the addon's "too large goes out as empty" rule, names with a
+surname, exactly 48 bytes and 49, and "Bernam" alone not matching "Bernam
+Keegan". Running the same test with 18 bit slots fails, so it would have caught
+this.
+
+Matching stays exact. HoomFishing never uses live sync, so its name not matching
+"Hoom Alaar" is fine.
+
+Export folders drop the space: `removePathSpaces` (on in this config, there for
+OBJ material files) strips all whitespace in `ExportHelper.getExportPath`, so
+"Hoom Alaar" exports to the folder `HoomAlaar`. The success toast shows the path
+before stripping (it said "Bernam Keegan" while writing to `BernamKeegan`), which
+is misleading but not fixed. The vtube avatar folders and the three `tuning.json`
+paths (Ctrl+F1 hotkey, start avatar, preload) were moved to `HoomAlaar` to match.
+Per-avatar settings live in `<model>.avatar.json` inside the folder, so they
+travel with it, but `tuning.json` refers to avatars by path.
 
 ## Standard and high definition models (commit 7b6b072f)
 
