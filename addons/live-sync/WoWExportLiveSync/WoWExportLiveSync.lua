@@ -7,7 +7,7 @@
 
 	  5 marker blocks : black, white, red, green, blue
 	                    (locate the strip, and calibrate black/white levels)
-	  162 data blocks : 6 bits each, 2 bits per channel, most significant first
+	  198 data blocks : 6 bits each, 2 bits per channel, most significant first
 	                    channel level = value * 85 (0, 85, 170, 255)
 	  2 end markers   : white, black
 	                    the distance from the first block to these gives the exact
@@ -15,16 +15,16 @@
 
 	Data bits, most significant first:
 
-	  4   format version (currently 4)
+	  4   format version (currently 5)
 	  8   change counter, wraps at 256
-	  5   character name length in bytes, 0 when it does not fit
-	  192 character name, 24 bytes of UTF-8, zero padded
-	  234 13 slots x 18 bits, item ID or 0 for an empty slot
+	  6   character name length in bytes, 0 when it does not fit
+	  384 character name, 48 bytes of UTF-8, zero padded
+	  260 13 slots x 20 bits, item ID or 0 for an empty slot
 	  4   customization count, 0 when no barbershop visit has revealed them
 	  504 14 customizations x (16 bit option ID + 20 bit choice ID), unused zero
 	  16  CRC-16/CCITT-FALSE over the preceding bits, padded to whole bytes
 
-	That is 967 bits in 972, so the last 5 bits are spare.
+	That is 1186 bits in 1188, so the last 2 bits are spare.
 
 	Slots are in SLOT_IDS order below, matching the game's inventory slot IDs.
 
@@ -57,17 +57,21 @@ local END_MARKERS = {
 	{ 0, 0, 0 },
 }
 
-local FORMAT_VERSION = 4
-local SLOT_BITS = 18
+local FORMAT_VERSION = 5
+-- Item IDs on this client already pass 2^18 (Finscale Soles is 281285), so 20
+-- bits leaves room to about a million.
+local SLOT_BITS = 20
 local SLOT_MAX = 2 ^ SLOT_BITS
-local DATA_BLOCKS = 162
+local DATA_BLOCKS = 198
 
 -- The character's name, so wow.export can refuse to dress a saved character in
--- someone else's gear. Names are at most 12 characters, and 24 bytes holds 12
--- two byte UTF-8 characters, which covers accented Latin names. A longer name is
--- sent as length 0, which the app treats as not matching anything.
-local NAME_LENGTH_BITS = 5
-local NAME_BYTES = 24
+-- someone else's gear. On Forever UnitName includes the surname ("Bernam
+-- Keegan"), so this is a first name, a space and a surname rather than one
+-- 12 character name. 48 bytes holds 24 two byte UTF-8 characters, so accented
+-- names fit too. A longer name is sent as length 0, which the app treats as
+-- not matching anything.
+local NAME_LENGTH_BITS = 6
+local NAME_BYTES = 48
 
 -- Customization choices are only known after a barbershop visit, so the count
 -- doubles as a "not known" flag at zero. The slots are a fixed block whether
@@ -101,6 +105,9 @@ local SLOT_IDS = {
 local counter = 0
 local blocks = {}
 local frame
+
+-- item IDs already reported as too large, so each is only printed once
+local oversized_items = {}
 
 -- committed is the character's applied appearance and broadcast is what the
 -- strip carries; they are the same except while a barbershop session is open,
@@ -151,9 +158,15 @@ local function build_payload()
 	for _, slot_id in ipairs(SLOT_IDS) do
 		local item_id = GetInventoryItemID('player', slot_id) or 0
 
-		-- 18 bits covers every live item ID; report an out-of-range one as empty
-		-- rather than sending its low bits, which would name a different item
+		-- an ID that does not fit is sent as empty rather than as its low bits,
+		-- which would name a different item. That still strips the slot on the
+		-- model, so say so in chat rather than let it go unnoticed
 		if item_id >= SLOT_MAX then
+			if not oversized_items[item_id] then
+				oversized_items[item_id] = true
+				print('|cff33ff99wow.export live sync|r: item ' .. item_id .. ' in slot ' .. slot_id .. ' does not fit the strip and is sent as empty')
+			end
+
 			item_id = 0
 		end
 

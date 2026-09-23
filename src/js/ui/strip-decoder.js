@@ -11,13 +11,13 @@
  * Layout, left to right, one block each:
  *
  *   5 marker blocks : black, white, red, green, blue
- *   162 data blocks : 6 bits each, 2 bits per channel, most significant first,
+ *   198 data blocks : 6 bits each, 2 bits per channel, most significant first,
  *                     channel level = value * 85
  *   2 end markers   : white, black
  *
  * Payload bits, most significant first: 4 format version, 8 change counter,
- * 5 character name length in bytes, 24 bytes of UTF-8 character name (zero
- * padded, length 0 when the name did not fit), 13 slots x 18 bits (game
+ * 6 character name length in bytes, 48 bytes of UTF-8 character name (zero
+ * padded, length 0 when the name did not fit), 13 slots x 20 bits (game
  * inventory slot IDs, 0 for empty), 4 customization
  * count, 14 customizations x (16 bit option ID + 20 bit choice ID), 16
  * CRC-16/CCITT-FALSE over the preceding bits padded to whole bytes.
@@ -31,13 +31,13 @@
  */
 
 const MARKER_COUNT = 5;
-const DATA_BLOCKS = 162;
+const DATA_BLOCKS = 198;
 const END_MARKER_COUNT = 2;
 const TOTAL_BLOCKS = MARKER_COUNT + DATA_BLOCKS + END_MARKER_COUNT;
-const SLOT_BITS = 18;
-const FORMAT_VERSION = 4;
-const NAME_LENGTH_BITS = 5;
-const NAME_BYTES = 24;
+const SLOT_BITS = 20;
+const FORMAT_VERSION = 5;
+const NAME_LENGTH_BITS = 6;
+const NAME_BYTES = 48;
 const CUST_SLOTS = 14;
 const CUST_COUNT_BITS = 4;
 const CUST_OPTION_BITS = 16;

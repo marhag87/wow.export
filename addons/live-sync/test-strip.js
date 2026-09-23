@@ -26,8 +26,8 @@ global.BUILD_RELEASE = true;
 global.nw = { App: { dataPath: fs.mkdtempSync(path.join(os.tmpdir(), 'wow-export-strip-test-')), manifest: {} } };
 const { LiveSync } = require(path.join(ROOT, 'src', 'js', 'ui', 'live-sync'));
 
-const FORMAT_VERSION = 4, SLOT_BITS = 18, DATA_BLOCKS = 162;
-const NAME_LENGTH_BITS = 5, NAME_BYTES = 24;
+const FORMAT_VERSION = 5, SLOT_BITS = 20, DATA_BLOCKS = 198;
+const NAME_LENGTH_BITS = 6, NAME_BYTES = 48;
 const CUST_SLOTS = 14, CUST_COUNT_BITS = 4, CUST_OPTION_BITS = 16, CUST_CHOICE_BITS = 20;
 const SLOT_IDS = [1, 3, 4, 5, 6, 7, 8, 9, 10, 15, 16, 17, 19];
 const MARKERS = [[0,0,0],[1,1,1],[1,0,0],[0,1,0],[0,0,1]];
@@ -48,7 +48,11 @@ function build_payload(counter, name, items, customizations) {
 	push(bits, name_bytes.length, NAME_LENGTH_BITS);
 	for (let i = 0; i < NAME_BYTES; i++) push(bits, name_bytes[i] ?? 0, 8);
 
-	for (const slot of SLOT_IDS) push(bits, items[slot] ?? 0, SLOT_BITS);
+	// as the addon does, an ID that does not fit goes out as empty
+	for (const slot of SLOT_IDS) {
+		const item_id = items[slot] ?? 0;
+		push(bits, item_id >= 2 ** SLOT_BITS ? 0 : item_id, SLOT_BITS);
+	}
 
 	const entries = customizations ?? [];
 	const count = Math.min(entries.length, CUST_SLOTS);
@@ -107,7 +111,7 @@ const check = (name, cond, extra) => {
 	if (!cond) failures++;
 };
 
-const items = { 1: 12345, 3: 250000, 5: 99, 16: 262143 };
+const items = { 1: 12345, 3: 250000, 5: 99, 8: 281285, 16: 262143, 17: 1048575 };
 const cust = [
 	{ option_id: 9399, choice_id: 78038 }, { option_id: 9400, choice_id: 78052 },
 	{ option_id: 9401, choice_id: 78073 }, { option_id: 9458, choice_id: 78623 },
@@ -132,11 +136,13 @@ for (const pitch of [1, 1.5, 3]) {
 		got.every((g, i) => g.optionID === cust[i].option_id && g.choiceID === cust[i].choice_id), got.length);
 }
 
-// names: accented, the 24 byte limit exactly, and one byte over
+// names: with a surname, accented, the 48 byte limit exactly, and one byte over
+const long_name = 'ÅÄÖåäöÅÄÖåäö ÅÄÖåäöÅÄÖåä'; // 23 two byte characters and a space
 for (const [label, name, expect] of [
+	['with surname', 'Bernam Keegan', 'Bernam Keegan'],
 	['accented', 'Hagström', 'Hagström'],
-	['12 two-byte chars (24 bytes)', 'ÅÄÖåäöÅÄÖåäö', 'ÅÄÖåäöÅÄÖåäö'],
-	['25 bytes does not fit', 'ÅÄÖåäöÅÄÖåäöx', null],
+	['48 bytes, the limit', long_name + 'x', long_name + 'x'],
+	['49 bytes does not fit', long_name + 'xy', null],
 	['no name', '', null],
 ]) {
 	const out = decode(build_payload(1, name, items, null));
@@ -151,6 +157,8 @@ const tab = fs.readFileSync(path.join(ROOT, 'src', 'js', 'modules', 'tab_charact
 const fn_src = tab.match(/function live_sync_is_loaded_character\([\s\S]*?\n}\n/)[0];
 const is_loaded = new Function(fn_src + '; return live_sync_is_loaded_character;')();
 check('matcher: same name', is_loaded('Bernam', 'Bernam') === true);
+check('matcher: name with surname', is_loaded('Bernam Keegan', 'Bernam Keegan') === true);
+check('matcher: first name alone is not a match', is_loaded('Bernam Keegan', 'Bernam') === false);
 check('matcher: case differs', is_loaded('bernam', 'Bernam') === true);
 check('matcher: decomposed accent', is_loaded('Bjo\u0308rn', 'Björn') === true);
 check('matcher: other character', is_loaded('Bernam', 'Hoom') === false);
