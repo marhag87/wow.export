@@ -65,10 +65,9 @@ local SLOT_MAX = 2 ^ SLOT_BITS
 local DATA_BLOCKS = 198
 
 -- The character's name, so wow.export can refuse to dress a saved character in
--- someone else's gear. On Forever UnitName includes the surname ("Bernam
--- Keegan"), so this is a first name, a space and a surname rather than one
--- 12 character name. 48 bytes holds 24 two byte UTF-8 characters, so accented
--- names fit too. A longer name is sent as length 0, which the app treats as
+-- someone else's gear. On Forever that is the first name, a space and the
+-- surname ("Bernam Keegan", see player_full_name) rather than one 12 character
+-- name. 48 bytes holds 24 two byte UTF-8 characters, so accented names fit too. A longer name is sent as length 0, which the app treats as
 -- not matching anything.
 local NAME_LENGTH_BITS = 6
 local NAME_BYTES = 48
@@ -116,6 +115,23 @@ local oversized_items = {}
 local committed_customizations
 local broadcast_customizations
 
+--- The player's first name and surname, as "Hoom Alaar".
+--
+-- Forever's UnitName returned the full name as one string at first, then a patch
+-- (2026-09-25) split it into two returns, first name and surname, the slot where
+-- retail puts the realm. Both shapes are handled: the surname is only appended
+-- when the first return does not already hold one.
+local function player_full_name()
+	local first, surname = UnitName('player')
+	first = first or ''
+
+	if type(surname) == 'string' and surname ~= '' and not first:find(' ', 1, true) then
+		return first .. ' ' .. surname
+	end
+
+	return first
+end
+
 --- CRC-16/CCITT-FALSE over a byte array.
 local function crc16(bytes)
 	local crc = 0xFFFF
@@ -145,7 +161,7 @@ local function build_payload()
 	push_bits(bits, counter, 8)
 
 	-- # is the length in bytes, which is what UTF-8 needs here
-	local name = UnitName('player') or ''
+	local name = player_full_name()
 	if #name > NAME_BYTES then
 		name = ''
 	end
