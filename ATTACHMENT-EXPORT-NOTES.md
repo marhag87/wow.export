@@ -18,6 +18,13 @@ a quadratic DB2 row lookup rather than any download (see "Startup performance"),
 and shrank the live sync strip from roughly 1240x22 pixels to 51x2 (see
 "Shrinking the strip").
 
+Updated 2026-09-25: the live sync strip now also carries the character's
+barbershop customization choices and full name (first name and surname), so a
+haircut reaches the model like a gear change and a saved character is never
+dressed as someone else. Item slots went back to 20 bits after an item ID passed
+2^18. A customization geoset bug (#11) is fixed. The strip format is covered by
+`addons/live-sync/test-strip.js`.
+
 ## How the viewer places attachments
 
 1. `SLOT_TO_ATTACHMENT` in `src/js/wow/EquipmentSlots.js` maps an equipment slot
@@ -643,10 +650,11 @@ In the tab, a choice is applied only when the loaded model has that option and
 that choice in it, so a Tauren's choices on an Undead are rejected rather than
 half applied, with one log line per sync saying none belonged to the model.
 
-Untested: the Forever barbershop UI errored, then was disabled entirely, so no
-change has ever been made in the chair. Verified only that captured choices
-reach the tab and apply. Commit-on-close, the `HasAnyChanges` discard rule and
-the counter bump after a haircut are unverified.
+Verified after the 2026-09-25 patch fixed the Forever barbershop (its UI had
+errored, then been disabled, so for a while no change could be made in the
+chair): a change paid for in the barbershop reached the model through live sync,
+which covers commit-on-close and the counter bump. Leaving the chair without
+paying — the `HasAnyChanges` discard rule — has not been tried specifically.
 
 ### Character name on the strip (commit 04393c6a)
 
@@ -722,6 +730,27 @@ is misleading but not fixed. The vtube avatar folders and the three `tuning.json
 paths (Ctrl+F1 hotkey, start avatar, preload) were moved to `HoomAlaar` to match.
 Per-avatar settings live in `<model>.avatar.json` inside the folder, so they
 travel with it, but `tuning.json` refers to avatars by path.
+
+### Surname moved to a second return (commit bd2c833f)
+
+A Forever patch on 2026-09-25 split `UnitName('player')` into two returns, first
+name and surname (`"Hoom", "Alaar"`), where it had returned `"Hoom Alaar"` as one
+string. The strip then carried only "Hoom", and live sync waited with `waiting:
+the game is on Hoom, Hoom Alaar is loaded` — the name check doing its job.
+
+Found with `/run local n,s=UnitName("player") print(n,s)`, which printed "Hoom
+Alaar" with no `nil`, so `s` held the surname. The patched `WowB.exe` also has
+`C_PlayerInfo.ShouldDisplaySurname`, `C_NameUtil.ReplaceSurnameSeparatorWith
+LinkSeparator(fullName)` and a `realmOrSurname` return on the character list
+APIs. `C_PaidServices.GetSurname` exists but only at character select; in game
+`C_PaidServices` is nil.
+
+`player_full_name()` in the addon joins the two returns with a space, and leaves
+a first return that already holds a space alone, so both shapes of the API work.
+Retail puts the realm in that slot, but Forever runs one megaserver per game
+type, so it can only be the surname. Verified: live sync matched "Hoom Alaar"
+again after `/reload`. The JS test mirror starts from a finished name string, so
+this Lua function is not covered by `test-strip.js`.
 
 ## Standard and high definition models (commit 7b6b072f)
 
@@ -1166,7 +1195,11 @@ it).
   per block), `665f44a0` (bun lockfile refresh) and `18f70350` (live sync slot
   filter), `7b6b072f` (standard/high definition models), `02dec3a8` (appearance
   refresh cost), `4c55c9f9` (character source texture reuse), `03635cb3` (glTF
-  export size and time) and `c71e5f9c` (repeat export cost) pushed to
+  export size and time), `c71e5f9c` (repeat export cost), `fdd95b0c`
+  (barbershop customization report), `c4628088` (customization geoset hide,
+  #11), `b28a0801` (customizations on the strip), `04393c6a` (character name on
+  the strip), `bc3033ec` (strip test), `0069098d` (20 bit item slots, 48 byte
+  names) and `bd2c833f` (surname from UnitName's second return) pushed to
   `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
