@@ -109,8 +109,8 @@ local frame
 local oversized_items = {}
 
 -- committed is the character's applied appearance and broadcast is what the
--- strip carries; they are the same except while a barbershop session is open,
--- when the strip holds still. Both are nil until a visit reveals them. See the
+-- strip carries; they are the same except while a barbershop session is open.
+-- Both are nil until a visit reveals them. See the
 -- barbershop section further down.
 local committed_customizations
 local broadcast_customizations
@@ -314,7 +314,9 @@ local session_customizations
 local session_has_changes
 
 -- Only the appearance that is applied when the chair is left reaches the strip,
--- so what is on screen mid-session is tracked but not broadcast. The session has
+-- so what is on screen mid-session is tracked but not broadcast. The barbershop
+-- hides the rest of the UI, strip included, so a preview could not be read off
+-- the screen anyway. The session has
 -- to be polled to track it at all: there is no event for moving through options,
 -- and the data is gone by the time the session closes.
 local SESSION_POLL = 0.2
@@ -425,7 +427,7 @@ local function load_committed_customizations()
 	broadcast_customizations_set(committed_customizations)
 end
 
---- Whether the chair holds changes that have not been paid for.
+--- Whether the chair holds changes that have not been accepted.
 local function has_pending_changes()
 	if type(C_BarberShop) ~= 'table' or type(C_BarberShop.HasAnyChanges) ~= 'function' then
 		return false
@@ -469,9 +471,10 @@ local function end_session()
 		session_ticker = nil
 	end
 
-	-- What is on screen with nothing pending has been paid for, so that is the
-	-- character's appearance from here. Pending changes are discarded by leaving
-	-- the chair, so those keep whatever was last committed - including the very
+	-- What is on screen with nothing pending has been accepted, so that is the
+	-- character's appearance from here. Pending changes are discarded by
+	-- cancelling out of the chair, so those keep whatever was last committed -
+	-- including the very
 	-- first visit, which commits the appearance the character arrived with.
 	if session_customizations and not session_has_changes then
 		commit_customizations(session_customizations)
@@ -520,7 +523,7 @@ events:SetScript('OnEvent', function(_, event)
 	elseif event == 'BARBER_SHOP_OPEN' then
 		start_session()
 	elseif event == 'BARBER_SHOP_APPEARANCE_APPLIED' then
-		-- catches a change that is paid for and then changed again and
+		-- catches a change that is accepted and then changed again and
 		-- cancelled, which would otherwise revert past it on the way out
 		if session_customizations then
 			commit_customizations(session_customizations)
