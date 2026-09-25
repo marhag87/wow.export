@@ -632,16 +632,19 @@ rather than `[]`, and the tab leaves its loaded choices alone. That distinction
 matters: before any barbershop visit every frame would otherwise read as "no
 customizations" and wipe the tab's choices.
 
-Only the appearance applied when the chair is left reaches the strip. During a
-session the addon polls every 0.2s (there is no event for moving through
-options, and the data is gone once the session closes) but does not broadcast.
-On close, if `C_BarberShop.HasAnyChanges()` was false at the last poll, what is
-on screen was paid for and becomes the committed appearance; otherwise the
-changes were discarded by leaving and the previous appearance stays. A first
-ever visit with nothing changed is how the appearance is learned at all.
-`BARBER_SHOP_APPEARANCE_APPLIED` is registered through `pcall` (an unknown event
-errors) and only covers pay, change again, then cancel — without it that case
-would revert past the paid change.
+Only the appearance accepted when the chair is left reaches the strip. The
+Forever barbershop is free: a change is accepted or cancelled, and cancelling
+keeps the old look. During a session the addon polls every 0.2s (there is no
+event for moving through options, and the data is gone once the session
+closes) but does not broadcast. It could not usefully do so anyway: the
+barbershop hides the rest of the UI, strip included, so the app sees no strip
+until the chair is left. On close, if `C_BarberShop.HasAnyChanges()` was false at
+the last poll, what is on screen was accepted and becomes the committed
+appearance; otherwise the changes were cancelled and the previous appearance
+stays. A first ever visit with nothing changed is how the appearance is learned
+at all. `BARBER_SHOP_APPEARANCE_APPLIED` is registered through `pcall` (an
+unknown event errors) and only covers accept, change again, then cancel —
+without it that case would revert past the accepted change.
 
 Stored per character (`WoWExportLiveSyncDB.characters["Name-Realm"]`). The old
 flat `customizations` key is not read.
@@ -652,9 +655,10 @@ half applied, with one log line per sync saying none belonged to the model.
 
 Verified after the 2026-09-25 patch fixed the Forever barbershop (its UI had
 errored, then been disabled, so for a while no change could be made in the
-chair): a change paid for in the barbershop reached the model through live sync,
-which covers commit-on-close and the counter bump. Leaving the chair without
-paying — the `HasAnyChanges` discard rule — has not been tried specifically.
+chair): an accepted change reached the model through live sync, which covers
+commit-on-close and the counter bump. Cancelling keeps the old look in game;
+that the strip then keeps the old look too — the `HasAnyChanges` discard rule —
+has not been checked in the app specifically.
 
 ### Character name on the strip (commit 04393c6a)
 
