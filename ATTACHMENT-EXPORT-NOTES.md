@@ -25,6 +25,11 @@ dressed as someone else. Item slots went back to 20 bits after an item ID passed
 2^18. A customization geoset bug (#11) is fixed. The strip format is covered by
 `addons/live-sync/test-strip.js`.
 
+Updated 2026-10-16: a Forever patch moved the client to interface 16001 and the
+addon stopped loading until its TOC was updated (see "Interface 16001"). Live
+sync for two game windows side by side (dual-boxing) is written but not yet
+committed, pending a test with both windows (see "Suggested next steps").
+
 ## How the viewer places attachments
 
 1. `SLOT_TO_ATTACHMENT` in `src/js/wow/EquipmentSlots.js` maps an equipment slot
@@ -756,6 +761,20 @@ type, so it can only be the surname. Verified: live sync matched "Hoom Alaar"
 again after `/reload`. The JS test mirror starts from a finished name string, so
 this Lua function is not covered by `test-strip.js`.
 
+### Interface 16001 (commit 9f63e309)
+
+The AddOns list showed wow.export Live Sync in red as "Incompatible". Its TOC
+still said `## Interface: 11507`; the Forever client (`_classic_beta_`) is now on
+**16001**, which every other Forever addon in that folder already declares
+(ForeverQuestTint, SealTimer, WhereYouAt, NeedRoll; the multi-client ones list
+16001 among theirs). Only the TOC changed; the installed Lua already matched the
+repo. Verified: the addon loads after a full client restart. A TOC change is not
+picked up by `/reload`.
+
+The game install is `D:\Games\World of Warcraft\_classic_beta_\Interface\AddOns\
+WoWExportLiveSync\`, a plain copy of `addons/live-sync/WoWExportLiveSync/` (not a
+link), so it has to be copied over again after any addon change.
+
 ## Standard and high definition models (commit 7b6b072f)
 
 Clients that ship both model sets - Classic Forever (`wow_classic_beta`,
@@ -1203,7 +1222,8 @@ it).
   (barbershop customization report), `c4628088` (customization geoset hide,
   #11), `b28a0801` (customizations on the strip), `04393c6a` (character name on
   the strip), `bc3033ec` (strip test), `0069098d` (20 bit item slots, 48 byte
-  names) and `bd2c833f` (surname from UnitName's second return) pushed to
+  names), `bd2c833f` (surname from UnitName's second return), `b5c9d5fc`
+  (barbershop comments) and `9f63e309` (addon TOC for interface 16001) pushed to
   `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
@@ -1248,3 +1268,13 @@ vtube repo).
    to see how the BLEND approximation of modes 3-7 looks.
 5. Consider upstreaming, referencing #521/#526 and #392. #7 is independent of
    the export changes and could go up as its own PR.
+6. Test live sync with two game windows side by side (windowed, with the title
+   bar). Uncommitted on `main` as of 2026-10-16: the app used to stop at the
+   first strip on screen and track only that one, so it read whichever window
+   it met first and could hop to the other when that strip vanished (barbershop,
+   minimised). Now `decode_frame_all` reads every strip, `LiveSync` follows the
+   one naming the loaded saved character (an unsaved one takes the first and
+   keeps to it), and `decode-strip.js` prints every strip in a screenshot. The
+   name matcher moved from `tab_characters.js` to `is_same_character` in
+   `live-sync.js`. 55 checks in `test-strip.js` pass; not yet tried in game.
+   Commit once it follows the right window.
