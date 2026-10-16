@@ -6,14 +6,15 @@
 
 	Reads the PNG here and hands the pixels to the app's own decoder, so this tool
 	and the app can never disagree about the wire format. Useful for checking that
-	the strip survives a real capture without running the app.
+	the strip survives a real capture without running the app. Every strip in the
+	image is printed, so a screenshot of two game windows shows both.
 */
 
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 
-const { decode_frame, SLOT_IDS, FORMAT_VERSION } = require(path.join(__dirname, '..', '..', 'src', 'js', 'ui', 'strip-decoder'));
+const { decode_frame_all, SLOT_IDS, FORMAT_VERSION } = require(path.join(__dirname, '..', '..', 'src', 'js', 'ui', 'strip-decoder'));
 
 const SLOT_NAMES = {
 	1: 'head', 3: 'shoulders', 4: 'shirt', 5: 'chest', 6: 'waist', 7: 'legs',
@@ -113,22 +114,28 @@ if (img.channels === 3) {
 	}
 }
 
-const result = decode_frame(pixels, img.width, img.height);
-if (!result) {
+const results = decode_frame_all(pixels, img.width, img.height);
+if (results.length === 0) {
 	console.error('no valid strip found: is the addon loaded, and is the capture lossless (PNG, not JPEG) and unscaled?');
 	process.exit(2);
 }
 
-console.log(`strip at ${result.strip.x},${result.strip.y}, pitch ${result.strip.pitch.toFixed(4)}px`);
-console.log(`format version ${result.version} (expected ${FORMAT_VERSION}), counter ${result.counter}`);
-console.log(`character ${result.name ?? "(name did not fit)"}`);
-for (const slot_id of SLOT_IDS)
-	console.log(`  ${String(SLOT_NAMES[slot_id]).padEnd(10)} ${result.items.get(slot_id) || '-'}`);
+if (results.length > 1)
+	console.log(`${results.length} strips, one per game window`);
 
-if (result.customizations === null) {
-	console.log('customizations: not known (the addon learns them from a barbershop visit)');
-} else {
-	console.log(`customizations: ${result.customizations.length}`);
-	for (const { optionID, choiceID } of result.customizations)
-		console.log(`  option ${String(optionID).padEnd(8)} choice ${choiceID}`);
+for (const result of results) {
+	console.log('');
+	console.log(`strip at ${result.strip.x},${result.strip.y}, pitch ${result.strip.pitch.toFixed(4)}px`);
+	console.log(`format version ${result.version} (expected ${FORMAT_VERSION}), counter ${result.counter}`);
+	console.log(`character ${result.name ?? "(name did not fit)"}`);
+	for (const slot_id of SLOT_IDS)
+		console.log(`  ${String(SLOT_NAMES[slot_id]).padEnd(10)} ${result.items.get(slot_id) || '-'}`);
+
+	if (result.customizations === null) {
+		console.log('customizations: not known (the addon learns them from a barbershop visit)');
+	} else {
+		console.log(`customizations: ${result.customizations.length}`);
+		for (const { optionID, choiceID } of result.customizations)
+			console.log(`  option ${String(optionID).padEnd(8)} choice ${choiceID}`);
+	}
 }

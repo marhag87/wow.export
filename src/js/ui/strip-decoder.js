@@ -300,6 +300,18 @@ function read_payload(view, strip) {
 }
 
 /**
+ * Read a candidate strip, keeping it only if it is a valid payload.
+ * @returns {object|null} - { version, counter, name, items, customizations, strip }
+ */
+function decode_strip(view, strip) {
+	const payload = read_payload(view, strip);
+	if (!payload.crc_ok || payload.version !== FORMAT_VERSION)
+		return null;
+
+	return { version: payload.version, counter: payload.counter, name: payload.name, items: payload.items, customizations: payload.customizations, strip };
+}
+
+/**
  * Decode a frame. Returns null when no valid strip is present, so a frame where
  * the game is occluded or mid-redraw is simply skipped.
  * @param {Uint8ClampedArray|Uint8Array} pixels - RGBA pixel data
@@ -312,12 +324,39 @@ function decode_frame(pixels, width, height, hint) {
 	const view = new PixelView(pixels, width, height);
 
 	for (const strip of find_strips(view, hint)) {
-		const payload = read_payload(view, strip);
-		if (payload.crc_ok && payload.version === FORMAT_VERSION)
-			return { version: payload.version, counter: payload.counter, name: payload.name, items: payload.items, customizations: payload.customizations, strip };
+		const result = decode_strip(view, strip);
+		if (result)
+			return result;
 	}
 
 	return null;
+}
+
+/**
+ * Decode every strip in a frame, for more than one game window on screen at once.
+ * @param {Uint8ClampedArray|Uint8Array} pixels - RGBA pixel data
+ * @param {number} width
+ * @param {number} height
+ * @returns {object[]} - as decode_frame returns, top to bottom then left to right
+ */
+function decode_frame_all(pixels, width, height) {
+	const view = new PixelView(pixels, width, height);
+	const found = [];
+
+	for (const strip of find_strips(view)) {
+		// the search meets a strip again on each of its rows it steps onto, and
+		// offers every pitch that fits, so anything at a strip already read is
+		// that strip. two game windows never put theirs this close together
+		const seen = found.some(({ strip: other }) => Math.abs(strip.x - other.x) <= other.pitch && strip.y - other.y <= Math.max(8, other.pitch * 4));
+		if (seen)
+			continue;
+
+		const result = decode_strip(view, strip);
+		if (result)
+			found.push(result);
+	}
+
+	return found;
 }
 
 module.exports = {
@@ -325,6 +364,7 @@ module.exports = {
 	TOTAL_BLOCKS,
 	SLOT_IDS,
 	decode_frame,
+	decode_frame_all,
 
 	// exposed for the tests in addons/live-sync/
 	_internal: { PixelView, find_strips, read_payload }

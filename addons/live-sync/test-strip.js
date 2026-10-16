@@ -8,7 +8,8 @@
 	strip and read back through the app's own decoder, so the two sides are
 	checked against each other without running the game. Also checks that the
 	constants the addon and decoder share agree, and exercises the character
-	name matcher and the frame reporting in the app.
+	name matcher, the frame reporting, and following one of two game windows
+	in the app.
 
 	Run it after any change to the wire format. There is no Lua runtime here,
 	so the mirror must be kept in step with WoWExportLiveSync.lua by hand; the
@@ -20,11 +21,12 @@ const os = require('os');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..', '..');
-const { decode_frame, TOTAL_BLOCKS } = require(path.join(ROOT, 'src', 'js', 'ui', 'strip-decoder'));
+const { decode_frame, decode_frame_all, TOTAL_BLOCKS } = require(path.join(ROOT, 'src', 'js', 'ui', 'strip-decoder'));
 // live-sync.js pulls in the app's log, which expects the nw.js runtime
 global.BUILD_RELEASE = true;
 global.nw = { App: { dataPath: fs.mkdtempSync(path.join(os.tmpdir(), 'wow-export-strip-test-')), manifest: {} } };
-const { LiveSync } = require(path.join(ROOT, 'src', 'js', 'ui', 'live-sync'));
+const { LiveSync, is_same_character } = require(path.join(ROOT, 'src', 'js', 'ui', 'live-sync'));
+const screencap = require(path.join(ROOT, 'src', 'js', 'screencap'));
 
 const FORMAT_VERSION = 5, SLOT_BITS = 20, DATA_BLOCKS = 198;
 const NAME_LENGTH_BITS = 6, NAME_BYTES = 48;
@@ -152,10 +154,7 @@ for (const [label, name, expect] of [
 const unknown = decode(build_payload(7, 'Hoom', items, null));
 check('unknown customizations are null', unknown && unknown.customizations === null);
 
-// the real matcher, lifted out of tab_characters.js so the test runs the source
-const tab = fs.readFileSync(path.join(ROOT, 'src', 'js', 'modules', 'tab_characters.js'), 'utf8');
-const fn_src = tab.match(/function live_sync_is_loaded_character\([\s\S]*?\n}\n/)[0];
-const is_loaded = new Function(fn_src + '; return live_sync_is_loaded_character;')();
+const is_loaded = is_same_character;
 check('matcher: same name', is_loaded('Bernam', 'Bernam') === true);
 check('matcher: name with surname', is_loaded('Bernam Keegan', 'Bernam Keegan') === true);
 check('matcher: first name alone is not a match', is_loaded('Bernam Keegan', 'Bernam') === false);
@@ -175,6 +174,111 @@ report({ counter: 0, name: 'Hoom' });
 report({ counter: 0, name: 'Bernam' });
 report({ counter: 1, name: 'Bernam' });
 check('report: dedupes same frame, reports relog', seen.join(' ') === 'Hoom:0 Bernam:0 Bernam:1', seen.join(' '));
+
+// two game windows: a desktop with a strip in each window's top left corner
+const BACKGROUND = [20, 30, 40];
+
+function desktop(width, height, strips) {
+	const px = new Uint8ClampedArray(width * height * 4);
+	for (let i = 0; i < px.length; i += 4) { px[i] = BACKGROUND[0]; px[i + 1] = BACKGROUND[1]; px[i + 2] = BACKGROUND[2]; px[i + 3] = 255; }
+	for (const { x, y, bits, pitch = 1, height: tall = 2 } of strips) {
+		const img = render(bits, pitch, tall);
+		for (let row = 0; row < img.height; row++)
+			px.set(img.px.subarray(row * img.width * 4, (row + 1) * img.width * 4), ((y + row) * width + x) * 4);
+	}
+	return { px, width, height };
+}
+
+const hoom = build_payload(3, 'Hoom', { 1: 111 }, null);
+const bernam = build_payload(9, 'Bernam Keegan', { 1: 222 }, null);
+
+// side by side on the same rows, four rows tall so the search crosses each twice
+const side = desktop(700, 40, [{ x: 0, y: 10, bits: hoom, height: 4 }, { x: 400, y: 10, bits: bernam, height: 4 }]);
+const both = decode_frame_all(side.px, side.width, side.height);
+check('all: two windows side by side', both.map(p => p.name).join(' / ') === 'Hoom / Bernam Keegan', both.map(p => p.name).join(' / '));
+
+const stacked = desktop(300, 600, [{ x: 0, y: 4, bits: hoom }, { x: 0, y: 304, bits: bernam }]);
+const above = decode_frame_all(stacked.px, stacked.width, stacked.height);
+check('all: two windows stacked', above.map(p => p.name).join(' / ') === 'Hoom / Bernam Keegan', above.map(p => p.name).join(' / '));
+
+for (const pitch of [1.5, 3]) {
+	const scaled = desktop(800, 60, [{ x: 0, y: 10, bits: hoom, pitch, height: Math.ceil(pitch * 2) }]);
+	const one = decode_frame_all(scaled.px, scaled.width, scaled.height);
+	check(`all: pitch ${pitch} strip read once`, one.length === 1, one.length);
+}
+
+// LiveSync against a fake screen: capture crops whatever `screen` holds
+let screen = side;
+screencap.getError = () => null;
+screencap.virtualScreen = () => ({ x: 0, y: 0, width: screen.width, height: screen.height });
+screencap.capture = (x, y, width, height) => {
+	const data = new Uint8ClampedArray(width * height * 4);
+	for (let row = 0; row < height; row++) {
+		for (let col = 0; col < width; col++) {
+			const sx = x + col, sy = y + row, o = (row * width + col) * 4;
+			const inside = sx >= 0 && sy >= 0 && sx < screen.width && sy < screen.height;
+			const s = (sy * screen.width + sx) * 4;
+			data[o] = inside ? screen.px[s] : BACKGROUND[0];
+			data[o + 1] = inside ? screen.px[s + 1] : BACKGROUND[1];
+			data[o + 2] = inside ? screen.px[s + 2] : BACKGROUND[2];
+			data[o + 3] = 255;
+		}
+	}
+	return { width, height, data };
+};
+
+function follow(wanted) {
+	const run = { reported: [], status: null, sync: new LiveSync(), wanted };
+	const on_payload = p => run.reported.push(p.name + ':' + p.counter);
+	const on_status = text => { run.status = text; };
+	run.sync.start(2 ** 30, on_payload, on_status, () => run.wanted);
+	run.sample = () => run.sync._sample(on_payload, on_status);
+	return run;
+}
+
+{
+	// the loaded character is in the right hand window
+	screen = side;
+	const run = follow('bernam keegan');
+	run.sample();
+	check('follow: picks the loaded character\'s window', run.reported.join(' ') === 'Bernam Keegan:9', run.reported.join(' '));
+	check('follow: narrows to that window\'s strip', run.sync.region && run.sync.region.x > 300, JSON.stringify(run.sync.region));
+
+	screen = desktop(700, 40, [{ x: 0, y: 10, bits: hoom, height: 4 }, { x: 400, y: 10, bits: build_payload(10, 'Bernam Keegan', { 1: 333 }, null), height: 4 }]);
+	run.sample();
+	check('follow: reads changes from its region', run.reported.join(' ') === 'Bernam Keegan:9 Bernam Keegan:10', run.reported.join(' '));
+
+	// a change in the other window is not reported
+	screen = desktop(700, 40, [{ x: 0, y: 10, bits: build_payload(4, 'Hoom', { 1: 444 }, null), height: 4 }, { x: 400, y: 10, bits: build_payload(10, 'Bernam Keegan', { 1: 333 }, null), height: 4 }]);
+	run.sample();
+	check('follow: ignores the other window', run.reported.length === 2, run.reported.join(' '));
+
+	// the right hand window logs over to someone else: wait, naming both windows
+	screen = desktop(700, 40, [{ x: 0, y: 10, bits: hoom, height: 4 }, { x: 400, y: 10, bits: build_payload(0, 'Zed', {}, null), height: 4 }]);
+	run.sample();
+	check('follow: waits when neither window is the loaded character', run.status === 'waiting: the game is on Hoom and Zed, bernam keegan is loaded', run.status);
+	check('follow: nothing reported while waiting', run.reported.length === 2, run.reported.join(' '));
+
+	// and back again, now in the left hand window
+	screen = desktop(700, 40, [{ x: 0, y: 10, bits: build_payload(1, 'Bernam Keegan', { 1: 555 }, null), height: 4 }, { x: 400, y: 10, bits: build_payload(0, 'Zed', {}, null), height: 4 }]);
+	run.sample();
+	check('follow: finds the character in the other window', run.reported[2] === 'Bernam Keegan:1' && run.sync.region.x < 300, run.reported.join(' '));
+	run.sync.stop();
+}
+
+{
+	// an unsaved character takes either window, and keeps to the one it took
+	screen = side;
+	const run = follow(null);
+	run.sample();
+	check('unsaved: takes the first window', run.reported.join(' ') === 'Hoom:3', run.reported.join(' '));
+
+	run.sync.region = null;
+	run.sync.last_name = 'Bernam Keegan';
+	run.sample();
+	check('unsaved: keeps to the window it followed', run.reported[1] === 'Bernam Keegan:9', run.reported.join(' '));
+	run.sync.stop();
+}
 
 // the sizes the addon and decoder must agree on
 const lua = fs.readFileSync(path.join(__dirname, 'WoWExportLiveSync', 'WoWExportLiveSync.lua'), 'utf8');

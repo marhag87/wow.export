@@ -32,7 +32,7 @@ const DBItemList = require('../db/caches/DBItemList');
 const DBGuildTabard = require('../db/caches/DBGuildTabard');
 const DBCharacterCustomization = require('../db/caches/DBCharacterCustomization');
 const character_appearance = require('../ui/character-appearance');
-const { LiveSync } = require('../ui/live-sync');
+const { LiveSync, is_same_character } = require('../ui/live-sync');
 const { Coalescer } = require('../ui/coalescer');
 
 
@@ -2113,16 +2113,13 @@ function live_sync_pending_customizations(core, customizations) {
 }
 
 /**
- * Whether the strip's character is the loaded saved character. Names compare
- * without case, and normalised so an accented letter matches however it was
- * typed. A strip without a name (the addon could not fit it) matches nothing.
+ * The character live sync should follow: the loaded saved character, or null for
+ * an unsaved one, which has no name to compare and takes whichever is in the game.
+ * With two game windows open, this is what picks the window to read.
+ * @returns {string|null}
  */
-function live_sync_is_loaded_character(loaded_name, strip_name) {
-	if (!strip_name)
-		return false;
-
-	const normalise = name => name.normalize('NFC').toLocaleLowerCase();
-	return normalise(loaded_name) === normalise(strip_name);
+function live_sync_wanted_character(core) {
+	return core.view.chrCurrentCharacter?.name ?? null;
 }
 
 async function apply_live_sync_payload(core, payload) {
@@ -2132,11 +2129,11 @@ async function apply_live_sync_payload(core, payload) {
 	}
 
 	// the strip names the logged-in character, and a saved character that is not
-	// them keeps its own gear and customizations. this waits rather than stopping
-	// live sync, so logging over to the right character picks up from there. an
-	// unsaved character has no name to compare, so it takes the strip as before
+	// them keeps its own gear and customizations. live sync only follows a strip
+	// naming the loaded character, so this only catches a character saved under a
+	// different name while a change was queued
 	const loaded = core.view.chrCurrentCharacter;
-	if (loaded && !live_sync_is_loaded_character(loaded.name, payload.name)) {
+	if (loaded && !is_same_character(loaded.name, payload.name)) {
 		const game = payload.name ?? 'an unnamed character';
 		log.write('Live sync ignoring change %d: the game is on %s, %s is loaded', payload.counter, game, loaded.name);
 		live_sync_status(core, util.format('waiting: the game is on %s, %s is loaded', game, loaded.name));
@@ -2223,7 +2220,8 @@ async function set_live_sync(core, enabled) {
 		live_sync.start(
 			core.view.config.chrLiveSyncIntervalMs,
 			payload => on_live_sync_payload(core, payload),
-			text => live_sync_status(core, text)
+			text => live_sync_status(core, text),
+			() => live_sync_wanted_character(core)
 		);
 	} catch (e) {
 		log.write('live sync could not start: %s', e.message);
