@@ -27,8 +27,8 @@ dressed as someone else. Item slots went back to 20 bits after an item ID passed
 
 Updated 2026-10-16: a Forever patch moved the client to interface 16001 and the
 addon stopped loading until its TOC was updated (see "Interface 16001"). Live
-sync for two game windows side by side (dual-boxing) is written but not yet
-committed, pending a test with both windows (see "Suggested next steps").
+sync now works with two game windows side by side (dual-boxing), following the
+window that plays the loaded character (see "Two game windows").
 
 ## How the viewer places attachments
 
@@ -775,6 +775,51 @@ The game install is `D:\Games\World of Warcraft\_classic_beta_\Interface\AddOns\
 WoWExportLiveSync\`, a plain copy of `addons/live-sync/WoWExportLiveSync/` (not a
 link), so it has to be copied over again after any addon change.
 
+### Two game windows (commit 8c037b55)
+
+Setup: two Forever clients side by side, windowed with the title bar, each
+drawing its own strip in its client area's top left corner.
+
+Problem: `decode_frame` stopped at the first strip that passed its CRC, and
+`LiveSync` then tracked only that strip's region. So it read whichever window the
+search met first (top row first, then left), and when that strip vanished
+(barbershop, minimised) the rescan found the other window and stayed on it.
+
+Fix, app side only (the addon and wire format are unchanged):
+
+- `decode_frame_all` in `strip-decoder.js` reads every strip in a frame. A
+  candidate within one pitch horizontally and `max(8, 4 x pitch)` px below a
+  strip already read is treated as that strip, since the search meets a strip on
+  each row it steps onto and offers every pitch that fits.
+- `LiveSync.start` takes a fourth argument, a `wanted()` getter that the
+  Characters tab answers with the loaded saved character's name (null when
+  unsaved). Asked on every sample, so saving a character mid-run takes effect.
+- The full-screen search follows the strip that names the wanted character and
+  narrows to its region. A change in the other window is never reported.
+- A tracked region showing a different character rescans immediately rather
+  than waiting out the three misses meant for a frame caught mid-redraw.
+- When no window has the wanted character, the status reads `waiting: the game
+  is on Hoom and Zed, Bernam Keegan is loaded`, logged once per change, and every
+  sample searches the whole screen until that character appears.
+- An unsaved character takes the first strip and prefers the same name on later
+  searches.
+- `is_same_character` (was `live_sync_is_loaded_character` in
+  `tab_characters.js`) now lives in `live-sync.js`. The guard in
+  `apply_live_sync_payload` stays for a change queued before the character was
+  saved under another name.
+- `decode-strip.js` prints every strip in a screenshot.
+
+Cost: a full-screen search of a 5120x1440 noise frame takes about 25-32 ms,
+the same range the old code spent whenever no strip was visible, so it is fine
+at the 1 s default interval.
+
+Test additions (55 checks): strips side by side on the same rows (four rows
+tall, so each is crossed twice) and stacked, a pitch 1.5 and 3 strip read once,
+and `LiveSync` against a fake screen: follows the right window, reads changes
+from its region, ignores the other window, waits naming both windows when
+neither matches, and finds the character again in the other window. Verified in
+game with both windows open.
+
 ## Standard and high definition models (commit 7b6b072f)
 
 Clients that ship both model sets - Classic Forever (`wow_classic_beta`,
@@ -1223,8 +1268,8 @@ it).
   #11), `b28a0801` (customizations on the strip), `04393c6a` (character name on
   the strip), `bc3033ec` (strip test), `0069098d` (20 bit item slots, 48 byte
   names), `bd2c833f` (surname from UnitName's second return), `b5c9d5fc`
-  (barbershop comments) and `9f63e309` (addon TOC for interface 16001) pushed to
-  `origin/main`.
+  (barbershop comments), `9f63e309` (addon TOC for interface 16001) and
+  `8c037b55` (two game windows) pushed to `origin/main`.
 - Test build run 35071507928 triggered on the fork via `test_build.yml`
   (`workflow_dispatch`, no secrets, artifacts kept 7 days).
 - Artifacts are ~1GB per platform because `publish/<platform>/*` holds three
@@ -1253,8 +1298,8 @@ Done: local build, Classic Tauren pauldron placement (#1), glTF material alpha
 and double-sidedness (#5), customization geosets (#7), attachment bone scale in
 animations (#8), export to character folder, save updates the open character,
 face forward (+Z), bare-feet boot textures (#9), cloak textures (#10), live sync
-from the running game, Characters tab load time, vtube cleanup (done in the
-vtube repo).
+from the running game, live sync with two game windows, Characters tab load
+time, vtube cleanup (done in the vtube repo).
 
 1. Test a one-handed weapon on the same character — a sword offset from the
    hand is the clearest check of attachment placement. Note the fingers will
@@ -1268,13 +1313,3 @@ vtube repo).
    to see how the BLEND approximation of modes 3-7 looks.
 5. Consider upstreaming, referencing #521/#526 and #392. #7 is independent of
    the export changes and could go up as its own PR.
-6. Test live sync with two game windows side by side (windowed, with the title
-   bar). Uncommitted on `main` as of 2026-10-16: the app used to stop at the
-   first strip on screen and track only that one, so it read whichever window
-   it met first and could hop to the other when that strip vanished (barbershop,
-   minimised). Now `decode_frame_all` reads every strip, `LiveSync` follows the
-   one naming the loaded saved character (an unsaved one takes the first and
-   keeps to it), and `decode-strip.js` prints every strip in a screenshot. The
-   name matcher moved from `tab_characters.js` to `is_same_character` in
-   `live-sync.js`. 55 checks in `test-strip.js` pass; not yet tried in game.
-   Commit once it follows the right window.
